@@ -1,0 +1,23 @@
+# Render Blueprint.
+#
+# Der Match-Server liefert im Produktionsbetrieb auch den gebauten Client aus
+# (siehe server/src/index.ts, statisches Ausliefern von client/dist). Damit
+# genügt ein einziger Web Service — Client und Server teilen sich Host und
+# Port, und der Client muss keine separate Server-URL kennen.
+services:
+  - type: web
+    name: arcane-industry-td
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # PORT setzt Render automatisch; der Server liest ihn aus process.env.
+      # HOST bleibt auf 0.0.0.0 (Standard im Code), damit Render den Dienst
+      # erreichen kann.

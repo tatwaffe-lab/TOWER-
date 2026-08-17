@@ -1,0 +1,24 @@
+{
+  "name": "tower-defense-project",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["shared", "server", "client"],
+  "scripts": {
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w client",
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w client",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "test": "npm run test:unit && npm run test:server",
+    "test:unit": "node --test server/test/*.test.js",
+    "test:server": "node server/e2e/run.js",
+    "test:multi": "node server/e2e/multiplayer.js",
+    "balance": "node server/tools/balance.js",
+    "start": "node server/dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21"
+  }
+}
