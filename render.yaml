@@ -8,7 +8,11 @@ services:
   - type: web
     name: arcane-industry-td
     runtime: node
-    plan: starter
+    # "free" = kostenloser Instanztyp, keine Zahlungsmethode nötig.
+    # Einschränkungen: Der Dienst schläft nach 15 Minuten ohne Zugriff ein und
+    # braucht dann ~1 Minute zum Aufwachen. Laufende Matches überleben das
+    # nicht. 750 Freistunden pro Monat und Workspace.
+    plan: free
     region: frankfurt
     buildCommand: npm ci && npm run build
     startCommand: npm start
