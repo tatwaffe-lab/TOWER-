@@ -17,11 +17,9 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
-    envVars:
+       envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: NODE_ENV
-        value: production
       # PORT setzt Render automatisch; der Server liest ihn aus process.env.
       # HOST bleibt auf 0.0.0.0 (Standard im Code), damit Render den Dienst
       # erreichen kann.
