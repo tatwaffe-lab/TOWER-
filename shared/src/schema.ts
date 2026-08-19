@@ -27,6 +27,8 @@ export class PlayerState extends Schema {
   @type("boolean") defeated: boolean = false;
   @type("boolean") connected: boolean = true;
   @type("boolean") isHost: boolean = false;
+  /** true = von der KI gesteuert. */
+  @type("boolean") isAi: boolean = false;
 
   @type("string") commanderId: string = "engineer";
   @type("number") commanderXp: number = 0;
@@ -41,6 +43,16 @@ export class PlayerState extends Schema {
   /** Wen dieser Spieler mit Sends angreift. */
   @type("string") sendTargetId: string = "";
   @type("number") sendCooldownMs: number = 0;
+
+  /**
+   * Wie viele Wellen dieser Spieler bereits bekommen hat. Kann über
+   * `state.wave` hinausgehen, wenn er Wellen vorzeitig ruft — dann bleibt
+   * die automatische Freigabe für ihn wirkungslos, bis der globale Zähler
+   * aufgeholt hat.
+   */
+  @type("number") waveIndex: number = 0;
+  /** Wie viele Wellen dieser Spieler dem globalen Zähler voraus ist. */
+  @type("number") wavesAhead: number = 0;
 
   /** Statistik für den Ergebnisbildschirm. */
   @type("number") kills: number = 0;
@@ -113,7 +125,10 @@ export class MatchState extends Schema {
   @type("string") nextWavePreview: string = "";
   @type("number") enemiesRemaining: number = 0;
   @type("boolean") waveActive: boolean = false;
-  @type("string") mode: string = "solo";
+  @type("string") mode: string = "campaign";
+  /** 0 = unbegrenzt (Endlosmodus). */
+  @type("number") maxWaves: number = 30;
+  @type("boolean") sendsEnabled: boolean = false;
   @type("number") seed: number = 0;
   @type("string") roomCode: string = "";
   @type("string") winnerId: string = "";

@@ -38,7 +38,8 @@ async function main() {
 
   try {
     // ---------------------------------------------------- Beitritt
-    const room = await colyseus.createRoom("match", { mode: "pvp" });
+    // Gefechtsmodus: nur dort sind mehrere Menschen und Sends erlaubt.
+    const room = await colyseus.createRoom("match", { mode: "battle" });
     const c1 = await colyseus.connectTo(room, { name: "Alice" });
     const c2 = await colyseus.connectTo(room, { name: "Bob" });
     await room.waitForNextPatch();

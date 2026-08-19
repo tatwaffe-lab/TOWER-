@@ -5,15 +5,13 @@ import {
   MatchState,
   TOWERS,
   TileKind,
-  deserializeLaneMap,
   defaultLaneMap,
+  deserializeLaneMap,
   resolveTowerStats,
 } from "@td/shared";
-import { PALETTE, SPRITE_BASE, TILE_SIZE } from "../art/palette";
-import { buildAllSprites, towerTexture } from "../art/spriteFactory";
+import { PALETTE, SPRITE_SCALE, TILE_SIZE } from "../art/palette";
+import { buildAllSprites, groundTexture, laneTexture, towerBaseTexture, turretTexture } from "../art/spriteFactory";
 import { audio } from "../audio/AudioManager";
-
-const SCALE = TILE_SIZE / SPRITE_BASE; // ganzzahlig: 48/16 = 3
 
 export interface SceneCallbacks {
   onTileClick(x: number, y: number, tile: TileKind): void;
@@ -33,6 +31,7 @@ export class MatchScene extends Phaser.Scene {
 
   private grid: LaneGrid = defaultLaneMap();
   private tileLayer!: Phaser.GameObjects.Container;
+  private decorLayer!: Phaser.GameObjects.Container;
   private entityLayer!: Phaser.GameObjects.Container;
   private fxLayer!: Phaser.GameObjects.Container;
   private overlayLayer!: Phaser.GameObjects.Container;
@@ -49,7 +48,6 @@ export class MatchScene extends Phaser.Scene {
   private selectedTowerId: string | null = null;
   private laneEditMode = false;
 
-  /** Wiederverwendete Partikel-/Projektilobjekte statt ständiger Neuerzeugung. */
   private bulletPool: Phaser.GameObjects.Image[] = [];
 
   constructor() {
@@ -60,20 +58,21 @@ export class MatchScene extends Phaser.Scene {
     buildAllSprites(this);
 
     this.tileLayer = this.add.container(0, 0);
+    this.decorLayer = this.add.container(0, 0);
     this.entityLayer = this.add.container(0, 0);
     this.fxLayer = this.add.container(0, 0);
     this.overlayLayer = this.add.container(0, 0);
 
     this.hoverRect = this.add
-      .rectangle(0, 0, TILE_SIZE, TILE_SIZE, PALETTE.buildableHover, 0.32)
-      .setStrokeStyle(2, PALETTE.buildableHover, 0.9)
+      .rectangle(0, 0, TILE_SIZE, TILE_SIZE, PALETTE.buildableHover, 0.3)
+      .setStrokeStyle(3, PALETTE.buildableHover, 0.95)
       .setOrigin(0)
       .setVisible(false);
     this.overlayLayer.add(this.hoverRect);
 
     this.rangeCircle = this.add
       .circle(0, 0, 10, PALETTE.accent, 0.07)
-      .setStrokeStyle(2, PALETTE.accent, 0.55)
+      .setStrokeStyle(2, PALETTE.accent, 0.5)
       .setVisible(false);
     this.overlayLayer.add(this.rangeCircle);
 
@@ -110,13 +109,16 @@ export class MatchScene extends Phaser.Scene {
       .setVisible(true);
   }
 
-  /** Karte aus dem Serverzustand übernehmen (nach Lane-Umbau). */
   setLaneMap(json: string) {
     if (!json) return;
     try {
       const parsed = deserializeLaneMap(JSON.parse(json));
+      const changed =
+        parsed.config.width !== this.grid.config.width ||
+        parsed.config.height !== this.grid.config.height ||
+        JSON.stringify(parsed.tiles) !== JSON.stringify(this.grid.tiles);
       this.grid = parsed;
-      this.drawGrid();
+      if (changed) this.drawGrid();
     } catch {
       // Ungültige Karte vom Server ignorieren statt abstürzen.
     }
@@ -124,50 +126,60 @@ export class MatchScene extends Phaser.Scene {
 
   private drawGrid() {
     this.tileLayer.removeAll(true);
+    this.decorLayer.removeAll(true);
     const { width, height } = this.grid.config;
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const kind = this.grid.tiles[y][x];
-        const key =
-          kind === "lane" || kind === "spawn" || kind === "core"
-            ? "tile_lane"
-            : kind === "buildable"
-              ? "tile_buildable"
-              : "tile_ground";
-        const tile = this.add.image(x * TILE_SIZE, y * TILE_SIZE, key).setOrigin(0).setScale(SCALE);
+        const isPath = kind === "lane" || kind === "spawn" || kind === "core";
+        const key = isPath ? laneTexture(x, y) : kind === "buildable" ? "tile_buildable" : groundTexture(x, y);
+        const tile = this.add.image(x * TILE_SIZE, y * TILE_SIZE, key).setOrigin(0).setScale(SPRITE_SCALE);
         this.tileLayer.add(tile);
-
-        if (kind === "spawn" || kind === "core") {
-          const marker = this.add
-            .rectangle(
-              (x + 0.5) * TILE_SIZE,
-              (y + 0.5) * TILE_SIZE,
-              TILE_SIZE - 8,
-              TILE_SIZE - 8,
-              kind === "spawn" ? PALETTE.spawn : PALETTE.core,
-              0.85
-            )
-            .setStrokeStyle(2, kind === "spawn" ? PALETTE.spawnGlow : PALETTE.coreGlow);
-          this.tileLayer.add(marker);
-          const label = this.add
-            .text((x + 0.5) * TILE_SIZE, (y + 0.5) * TILE_SIZE, kind === "spawn" ? "S" : "C", {
-              fontFamily: "monospace",
-              fontSize: "18px",
-              color: "#ffffff",
-            })
-            .setOrigin(0.5);
-          this.tileLayer.add(label);
-          // Sanftes Pulsieren, damit die Karte lebt.
-          this.tweens.add({
-            targets: marker,
-            alpha: { from: 0.85, to: 0.45 },
-            duration: 1400,
-            yoyo: true,
-            repeat: -1,
-          });
-        }
       }
+    }
+
+    // Spawn-Portal und Core als eigene Bauwerke obendrauf
+    const spawn = this.add
+      .image((this.grid.spawn.x + 0.5) * TILE_SIZE, (this.grid.spawn.y + 0.5) * TILE_SIZE, "marker_spawn")
+      .setScale(SPRITE_SCALE);
+    this.decorLayer.add(spawn);
+    this.tweens.add({ targets: spawn, scale: SPRITE_SCALE * 1.06, duration: 1300, yoyo: true, repeat: -1 });
+
+    const core = this.add
+      .image((this.grid.core.x + 0.5) * TILE_SIZE, (this.grid.core.y + 0.5) * TILE_SIZE, "marker_core")
+      .setScale(SPRITE_SCALE);
+    this.decorLayer.add(core);
+    this.tweens.add({ targets: core, scale: SPRITE_SCALE * 1.08, duration: 900, yoyo: true, repeat: -1 });
+
+    this.addAmbientLife();
+  }
+
+  /**
+   * Lebendige Karte: langsam treibende Staubpartikel und ein Flackern an den
+   * Rändern. Rein kosmetisch, aber nimmt der Karte die Starrheit.
+   */
+  private addAmbientLife() {
+    const w = this.grid.config.width * TILE_SIZE;
+    const h = this.grid.config.height * TILE_SIZE;
+    for (let i = 0; i < 26; i++) {
+      const p = this.add
+        .image(Math.random() * w, Math.random() * h, "px_dust")
+        .setScale(SPRITE_SCALE * (0.5 + Math.random()))
+        .setAlpha(0.12 + Math.random() * 0.2);
+      this.decorLayer.add(p);
+      this.tweens.add({
+        targets: p,
+        x: p.x + (Math.random() - 0.5) * 140,
+        y: p.y - 40 - Math.random() * 90,
+        alpha: 0,
+        duration: 6000 + Math.random() * 6000,
+        repeat: -1,
+        onRepeat: () => {
+          p.setPosition(Math.random() * w, h * (0.5 + Math.random() * 0.5));
+          p.setAlpha(0.12 + Math.random() * 0.2);
+        },
+      });
     }
   }
 
@@ -197,7 +209,6 @@ export class MatchScene extends Phaser.Scene {
     const hit = this.tileAtPointer(p);
     if (!hit || !this.state) return;
 
-    // Klick auf einen eigenen Turm öffnet den Inspektor.
     if (!this.laneEditMode) {
       for (const [id, tower] of this.state.towers) {
         if (tower.ownerId === this.mySessionId && tower.x === hit.x && tower.y === hit.y) {
@@ -222,8 +233,8 @@ export class MatchScene extends Phaser.Scene {
     if (!me) return;
     if (this.lastCoreHp >= 0 && me.coreHp < this.lastCoreHp) {
       audio.play("core-damage");
-      this.cameras.main.shake(180, 0.006);
-      this.cameras.main.flash(120, 180, 40, 40);
+      this.cameras.main.shake(200, 0.007);
+      this.cameras.main.flash(140, 190, 50, 50);
     }
     this.lastCoreHp = me.coreHp;
   }
@@ -238,44 +249,54 @@ export class MatchScene extends Phaser.Scene {
 
       let container = this.towerSprites.get(id);
       if (!container) {
-        const sprite = this.add.image(0, 0, towerTexture(tower.defId, tower.level, tower.specializationId));
-        sprite.setScale(SCALE);
-        container = this.add.container((tower.x + 0.5) * TILE_SIZE, (tower.y + 0.5) * TILE_SIZE, [sprite]);
-        container.setData("sprite", sprite);
-        container.setData("tex", "");
+        const base = this.add.image(0, 0, towerBaseTexture(tower.defId, tower.level, tower.specializationId));
+        base.setScale(SPRITE_SCALE);
+        const turret = this.add.image(0, -4, turretTexture(tower.defId, tower.level, tower.specializationId));
+        turret.setScale(SPRITE_SCALE);
+        container = this.add.container((tower.x + 0.5) * TILE_SIZE, (tower.y + 0.5) * TILE_SIZE, [base, turret]);
+        container.setData("base", base);
+        container.setData("turret", turret);
+        container.setData("look", "");
         this.entityLayer.add(container);
         this.towerSprites.set(id, container);
+
         audio.play("build");
-        // Bau-Animation: kurz aufploppen.
-        container.setScale(0.6);
-        this.tweens.add({ targets: container, scale: 1, duration: 180, ease: "Back.easeOut" });
+        container.setScale(0.5);
+        this.tweens.add({ targets: container, scale: 1, duration: 220, ease: "Back.easeOut" });
+        this.spawnBurst(container.x, container.y, "px_dust", 10, 0x6d6350);
       }
 
-      const sprite = container.getData("sprite") as Phaser.GameObjects.Image;
-      const wantTex = towerTexture(tower.defId, tower.level, tower.specializationId);
-      if (container.getData("tex") !== wantTex) {
-        sprite.setTexture(wantTex);
-        container.setData("tex", wantTex);
-        if (container.getData("tex")) {
+      const base = container.getData("base") as Phaser.GameObjects.Image;
+      const turret = container.getData("turret") as Phaser.GameObjects.Image;
+      const look = `${tower.level}:${tower.specializationId}`;
+      if (container.getData("look") !== look) {
+        const hadLook = container.getData("look") !== "";
+        base.setTexture(towerBaseTexture(tower.defId, tower.level, tower.specializationId));
+        turret.setTexture(turretTexture(tower.defId, tower.level, tower.specializationId));
+        container.setData("look", look);
+        if (hadLook) {
           audio.play("upgrade");
-          this.spawnBurst((tower.x + 0.5) * TILE_SIZE, (tower.y + 0.5) * TILE_SIZE, "px_spark", 10, 0xffd98a);
+          this.spawnBurst(container.x, container.y, "px_spark", 14, 0xffd98a);
         }
       }
 
-      // Deaktivierte Türme werden grau und flackern.
-      sprite.setTint(tower.disabledMs > 0 ? 0x555f70 : 0xffffff);
+      // Geschützturm dreht sich zum Ziel — sanft, nicht schlagartig.
+      turret.rotation = Phaser.Math.Angle.RotateTo(turret.rotation, tower.facing, 0.25);
 
-      // Mündungsfeuer bei jedem neuen Schuss.
+      const disabled = tower.disabledMs > 0;
+      base.setTint(disabled ? 0x5a6472 : 0xffffff);
+      turret.setTint(disabled ? 0x5a6472 : 0xffffff);
+      if (disabled && Math.random() < 0.08) {
+        this.spawnBurst(container.x, container.y - 10, "px_smoke", 2, 0x8a93a8);
+      }
+
       const last = this.lastShotTick.get(id) ?? tower.shotTick;
       if (tower.shotTick > last) {
         this.onTowerFired(tower.defId, tower.x, tower.y, tower.facing);
-        // Rückstoß
-        const def = TOWERS[tower.defId];
-        if (def) {
-          const kick = 4;
-          sprite.setPosition(-Math.cos(tower.facing) * kick, -Math.sin(tower.facing) * kick);
-          this.tweens.add({ targets: sprite, x: 0, y: 0, duration: 90 });
-        }
+        // Rückstoß entlang der Rohrachse
+        const kick = 5;
+        turret.setPosition(-Math.cos(tower.facing) * kick, -4 - Math.sin(tower.facing) * kick);
+        this.tweens.add({ targets: turret, x: 0, y: -4, duration: 110, ease: "Quad.easeOut" });
       }
       this.lastShotTick.set(id, tower.shotTick);
     }
@@ -303,47 +324,66 @@ export class MatchScene extends Phaser.Scene {
       case "splash":
       case "lob":
         audio.play("shot-heavy");
-        this.spawnMuzzle(x, y, facing, 0xffb35c);
+        this.spawnMuzzle(x, y, facing, 0xffb35c, 10);
+        this.cameras.main.shake(60, 0.0015);
         break;
       case "chain":
         audio.play("shot-energy");
         break;
       case "beam":
         audio.play("shot-heavy");
-        this.spawnMuzzle(x, y, facing, 0xd8f0ff);
+        this.spawnMuzzle(x, y, facing, 0xd8f0ff, 9);
         break;
       default:
         audio.play("shot-light");
-        this.spawnMuzzle(x, y, facing, 0xffe9a8);
+        this.spawnMuzzle(x, y, facing, 0xffe9a8, 7);
         break;
     }
   }
 
-  private spawnMuzzle(x: number, y: number, facing: number, color: number) {
-    const flash = this.add.circle(x + Math.cos(facing) * 16, y + Math.sin(facing) * 16, 6, color, 0.9);
+  private spawnMuzzle(x: number, y: number, facing: number, color: number, size: number) {
+    const dist = 26;
+    const flash = this.add.circle(x + Math.cos(facing) * dist, y + Math.sin(facing) * dist, size, color, 0.95);
     this.fxLayer.add(flash);
     this.tweens.add({
       targets: flash,
       alpha: 0,
-      scale: 0.3,
-      duration: 110,
+      scale: 0.2,
+      duration: 130,
       onComplete: () => flash.destroy(),
     });
+    // Mündungsrauch
+    for (let i = 0; i < 2; i++) {
+      const smoke = this.add
+        .image(x + Math.cos(facing) * dist, y + Math.sin(facing) * dist, "px_smoke")
+        .setScale(SPRITE_SCALE)
+        .setAlpha(0.5);
+      this.fxLayer.add(smoke);
+      this.tweens.add({
+        targets: smoke,
+        x: smoke.x + Math.cos(facing) * 14 + (Math.random() - 0.5) * 10,
+        y: smoke.y + Math.sin(facing) * 14 - 8,
+        alpha: 0,
+        scale: SPRITE_SCALE * 2,
+        duration: 320,
+        onComplete: () => smoke.destroy(),
+      });
+    }
   }
 
   private spawnCone(x: number, y: number, facing: number, texture: string) {
-    for (let i = 0; i < 5; i++) {
-      const spread = (Math.random() - 0.5) * 0.7;
-      const dist = 20 + Math.random() * 55;
-      const p = this.add.image(x, y, texture).setScale(2);
+    for (let i = 0; i < 6; i++) {
+      const spread = (Math.random() - 0.5) * 0.8;
+      const dist = 26 + Math.random() * 70;
+      const p = this.add.image(x, y, texture).setScale(SPRITE_SCALE);
       this.fxLayer.add(p);
       this.tweens.add({
         targets: p,
         x: x + Math.cos(facing + spread) * dist,
         y: y + Math.sin(facing + spread) * dist,
         alpha: 0,
-        scale: 0.5,
-        duration: 260,
+        scale: SPRITE_SCALE * 0.4,
+        duration: 300,
         onComplete: () => p.destroy(),
       });
     }
@@ -364,11 +404,10 @@ export class MatchScene extends Phaser.Scene {
 
       let container = this.enemySprites.get(id);
       if (!container) {
-        const sprite = this.add.image(0, 0, `enemy_${enemy.defId}`).setScale(SCALE);
-        const bar = this.add.rectangle(0, -TILE_SIZE * 0.42, TILE_SIZE * 0.6, 4, PALETTE.hp).setOrigin(0.5);
-        const barBg = this.add
-          .rectangle(0, -TILE_SIZE * 0.42, TILE_SIZE * 0.6 + 2, 6, 0x000000, 0.65)
-          .setOrigin(0.5);
+        const sprite = this.add.sprite(0, 0, `enemy_${enemy.defId}_0`).setScale(SPRITE_SCALE);
+        sprite.play(`walk_${enemy.defId}`);
+        const barBg = this.add.rectangle(0, -TILE_SIZE * 0.44, TILE_SIZE * 0.56 + 2, 7, 0x000000, 0.7).setOrigin(0.5);
+        const bar = this.add.rectangle(0, -TILE_SIZE * 0.44, TILE_SIZE * 0.56, 5, PALETTE.hp).setOrigin(0.5);
         container = this.add.container(px, py, [sprite, barBg, bar]);
         container.setData("sprite", sprite);
         container.setData("bar", bar);
@@ -378,23 +417,25 @@ export class MatchScene extends Phaser.Scene {
 
         if (def.cls === "boss") {
           audio.play("boss-spawn");
-          this.cameras.main.shake(300, 0.004);
+          this.cameras.main.shake(400, 0.006);
           container.setScale(0.3);
-          this.tweens.add({ targets: container, scale: 1, duration: 400, ease: "Back.easeOut" });
+          this.tweens.add({ targets: container, scale: 1, duration: 450, ease: "Back.easeOut" });
         }
-        // Gesendete Gegner bekommen eine deutliche Warnfarbe.
         if (enemy.sent) sprite.setTint(0xff9fb0);
       }
 
       container.setPosition(px, py);
-      const sprite = container.getData("sprite") as Phaser.GameObjects.Image;
+      const sprite = container.getData("sprite") as Phaser.GameObjects.Sprite;
       const bar = container.getData("bar") as Phaser.GameObjects.Rectangle;
 
-      // Trefferblitz bei HP-Verlust
+      // Blickrichtung: nach links laufende Gegner werden gespiegelt.
+      const facingLeft = Math.cos(enemy.facing) < -0.15;
+      sprite.setFlipX(facingLeft);
+
       const prevHp = container.getData("hp") as number;
       if (enemy.hp < prevHp) {
         sprite.setTintFill(0xffffff);
-        this.time.delayedCall(45, () => {
+        this.time.delayedCall(50, () => {
           if (sprite.active) sprite.setTint(enemy.sent ? 0xff9fb0 : 0xffffff);
         });
         audio.play("hit");
@@ -402,10 +443,9 @@ export class MatchScene extends Phaser.Scene {
       container.setData("hp", enemy.hp);
 
       const ratio = Phaser.Math.Clamp(enemy.hp / Math.max(1, enemy.maxHp), 0, 1);
-      bar.width = TILE_SIZE * 0.6 * ratio;
+      bar.width = TILE_SIZE * 0.56 * ratio;
       bar.fillColor = ratio > 0.5 ? PALETTE.hp : ratio > 0.25 ? PALETTE.gold : PALETTE.danger;
 
-      // Statusfärbung: der stärkste sichtbare Effekt gewinnt.
       let statusTint: number | null = null;
       for (const status of enemy.statuses) {
         if (status.kind === "stun") statusTint = 0x9fe8ff;
@@ -413,20 +453,28 @@ export class MatchScene extends Phaser.Scene {
         else if (status.kind === "poison" && statusTint === null) statusTint = 0xb6f08a;
         else if (status.kind === "slow" && statusTint === null) statusTint = 0x9fd8ff;
       }
-      if (statusTint !== null && enemy.hp >= prevHp) sprite.setTint(statusTint);
-      else if (statusTint === null && enemy.hp >= prevHp) sprite.setTint(enemy.sent ? 0xff9fb0 : 0xffffff);
+      if (enemy.hp >= prevHp) sprite.setTint(statusTint ?? (enemy.sent ? 0xff9fb0 : 0xffffff));
 
-      // Phasende Gegner werden halbtransparent.
-      container.setAlpha(enemy.untargetable ? 0.4 : 1);
+      // Statuspartikel — brennende und vergiftete Gegner qualmen sichtbar.
+      if (statusTint !== null && Math.random() < 0.12) {
+        const tex = statusTint === 0xffb27a ? "px_fire" : statusTint === 0xb6f08a ? "px_poison" : "px_ice";
+        this.spawnBurst(px, py - 6, tex, 1, 0xffffff);
+      }
 
-      // Bossphasenwechsel hörbar und sichtbar machen.
+      // Animationstempo an die tatsächliche Geschwindigkeit koppeln:
+      // verlangsamte Gegner laufen sichtbar träger.
+      const slowed = enemy.statuses.some((s) => s.kind === "slow" || s.kind === "stun");
+      sprite.anims.timeScale = slowed ? 0.4 : 1;
+
+      container.setAlpha(enemy.untargetable ? 0.35 : 1);
+
       if (enemy.bossPhase) {
         const key = `${id}:${enemy.bossPhase}`;
         if (!this.seenBossPhases.has(key)) {
           this.seenBossPhases.add(key);
           audio.play("boss-phase");
-          this.cameras.main.shake(240, 0.005);
-          this.showFloatingText(px, py - 30, enemy.bossPhase, "#ff9f6a");
+          this.cameras.main.shake(280, 0.006);
+          this.showFloatingText(px, py - 38, enemy.bossPhase, "#ff9f6a");
         }
       }
     }
@@ -437,7 +485,7 @@ export class MatchScene extends Phaser.Scene {
         const y = container.y;
         container.destroy();
         this.enemySprites.delete(id);
-        this.spawnBurst(x, y, "px_blood", 7, 0xd4564f);
+        this.spawnBurst(x, y, "px_blood", 9, 0xd4564f);
         audio.play("enemy-death");
       }
     }
@@ -451,7 +499,6 @@ export class MatchScene extends Phaser.Scene {
       this.seenEffects.add(id);
       this.playEffect(fx.kind, fx.x, fx.y, fx.x2, fx.y2, fx.radius);
     }
-    // Set gelegentlich aufräumen, damit es nicht unbegrenzt wächst.
     if (this.seenEffects.size > 400) {
       const live = new Set(this.state.effects.keys());
       for (const id of this.seenEffects) if (!live.has(id)) this.seenEffects.delete(id);
@@ -472,77 +519,83 @@ export class MatchScene extends Phaser.Scene {
           targets: bullet,
           x: x2,
           y: y2,
-          duration: 120,
+          duration: 110,
           onComplete: () => this.releaseBullet(bullet),
         });
         break;
       }
       case "beam": {
-        const line = this.add.line(0, 0, x, y, x2, y2, 0xd8f0ff, 0.9).setOrigin(0).setLineWidth(2);
+        const line = this.add.line(0, 0, x, y, x2, y2, 0xd8f0ff, 0.95).setOrigin(0).setLineWidth(3);
         this.fxLayer.add(line);
-        this.tweens.add({ targets: line, alpha: 0, duration: 170, onComplete: () => line.destroy() });
+        this.tweens.add({ targets: line, alpha: 0, duration: 190, onComplete: () => line.destroy() });
         break;
       }
       case "lightning": {
-        const line = this.add.line(0, 0, x, y, x2, y2, 0xc9a6ff, 1).setOrigin(0).setLineWidth(3);
-        this.fxLayer.add(line);
-        this.tweens.add({ targets: line, alpha: 0, duration: 150, onComplete: () => line.destroy() });
-        this.spawnBurst(x2, y2, "px_energy", 4, 0xc9a6ff);
+        // Gezackter Blitz statt gerader Linie
+        const segments = 4;
+        for (let i = 0; i < segments; i++) {
+          const t0 = i / segments;
+          const t1 = (i + 1) / segments;
+          const jitter = () => (Math.random() - 0.5) * 16;
+          const ax = x + (x2 - x) * t0 + (i === 0 ? 0 : jitter());
+          const ay = y + (y2 - y) * t0 + (i === 0 ? 0 : jitter());
+          const bx = x + (x2 - x) * t1 + (i === segments - 1 ? 0 : jitter());
+          const by = y + (y2 - y) * t1 + (i === segments - 1 ? 0 : jitter());
+          const seg = this.add.line(0, 0, ax, ay, bx, by, 0xc9a6ff, 1).setOrigin(0).setLineWidth(3);
+          this.fxLayer.add(seg);
+          this.tweens.add({ targets: seg, alpha: 0, duration: 170, onComplete: () => seg.destroy() });
+        }
+        this.spawnBurst(x2, y2, "px_energy", 5, 0xc9a6ff);
         break;
       }
       case "explosion": {
         audio.play("explosion");
-        const ring = this.add.circle(x, y, 4, 0xffb35c, 0.55).setStrokeStyle(3, 0xffd98a, 0.9);
+        const ring = this.add.circle(x, y, 5, 0xffb35c, 0.5).setStrokeStyle(4, 0xffd98a, 0.95);
         this.fxLayer.add(ring);
         this.tweens.add({
           targets: ring,
           radius: radius * TILE_SIZE,
           alpha: 0,
-          duration: 280,
+          duration: 300,
           onComplete: () => ring.destroy(),
         });
-        this.spawnBurst(x, y, "px_fire", 12, 0xff8a3c);
-        this.cameras.main.shake(90, 0.0025);
+        this.spawnBurst(x, y, "px_fire", 14, 0xff8a3c);
+        this.spawnBurst(x, y, "px_smoke", 6, 0x8a93a8);
+        this.cameras.main.shake(100, 0.003);
         break;
       }
-      case "cone":
-        break; // wird bereits beim Schuss gezeichnet
-      case "death":
-        break; // wird beim Entfernen des Gegners gezeichnet
       case "sabotage":
-        this.spawnBurst(x, y, "px_smoke", 8, 0x8a93a8);
-        this.showFloatingText(x, y - 20, "GESTÖRT", "#ff9f45");
+        this.spawnBurst(x, y, "px_smoke", 10, 0x8a93a8);
+        this.showFloatingText(x, y - 26, "GESTÖRT", "#ff9f45");
         break;
-      case "boss-phase":
-        break; // wird über enemy.bossPhase behandelt
       case "ability-overclock":
       case "ability-grid":
       case "ability-fortress":
       case "ability-timefield":
       case "ability-rewind": {
         audio.play(kind === "ability-grid" || kind === "ability-rewind" ? "ultimate" : "ability");
-        const ring = this.add.circle(x, y, 6, PALETTE.accent, 0.18).setStrokeStyle(3, PALETTE.accent, 0.85);
+        const ring = this.add.circle(x, y, 8, PALETTE.accent, 0.18).setStrokeStyle(4, PALETTE.accent, 0.9);
         this.fxLayer.add(ring);
         this.tweens.add({
           targets: ring,
           radius: Math.max(1, radius) * TILE_SIZE,
           alpha: 0,
-          duration: 600,
+          duration: 700,
           onComplete: () => ring.destroy(),
         });
+        this.spawnBurst(x, y, "px_energy", 16, PALETTE.accent);
         break;
       }
     }
   }
 
-  /** Einfaches Pooling für Projektile — vermeidet ständige Allokation. */
   private getBullet(x: number, y: number): Phaser.GameObjects.Image {
     const bullet = this.bulletPool.pop();
     if (bullet) {
       bullet.setPosition(x, y).setActive(true).setVisible(true).setAlpha(1);
       return bullet;
     }
-    const created = this.add.image(x, y, "px_bullet").setScale(2);
+    const created = this.add.image(x, y, "px_bullet").setScale(SPRITE_SCALE);
     this.fxLayer.add(created);
     return created;
   }
@@ -554,20 +607,20 @@ export class MatchScene extends Phaser.Scene {
   }
 
   private spawnBurst(x: number, y: number, texture: string, count: number, tint: number) {
-    // Deckelung: bei sehr vielen gleichzeitigen Effekten wird reduziert.
-    const limited = this.fxLayer.length > 220 ? Math.ceil(count / 3) : count;
+    const limited = this.fxLayer.length > 240 ? Math.ceil(count / 3) : count;
     for (let i = 0; i < limited; i++) {
-      const p = this.add.image(x, y, texture).setScale(2).setTint(tint);
+      const p = this.add.image(x, y, texture).setScale(SPRITE_SCALE).setTint(tint);
       this.fxLayer.add(p);
       const angle = Math.random() * Math.PI * 2;
-      const dist = 8 + Math.random() * 22;
+      const dist = 10 + Math.random() * 30;
       this.tweens.add({
         targets: p,
         x: x + Math.cos(angle) * dist,
         y: y + Math.sin(angle) * dist,
         alpha: 0,
-        scale: 0.5,
-        duration: 260 + Math.random() * 180,
+        scale: SPRITE_SCALE * 0.3,
+        rotation: (Math.random() - 0.5) * 3,
+        duration: 280 + Math.random() * 220,
         onComplete: () => p.destroy(),
       });
     }
@@ -575,19 +628,18 @@ export class MatchScene extends Phaser.Scene {
 
   private showFloatingText(x: number, y: number, text: string, color: string) {
     const label = this.add
-      .text(x, y, text, { fontFamily: "monospace", fontSize: "13px", color, stroke: "#000000", strokeThickness: 3 })
+      .text(x, y, text, { fontFamily: "monospace", fontSize: "15px", color, stroke: "#000000", strokeThickness: 4 })
       .setOrigin(0.5);
     this.fxLayer.add(label);
     this.tweens.add({
       targets: label,
-      y: y - 26,
+      y: y - 32,
       alpha: 0,
-      duration: 900,
+      duration: 950,
       onComplete: () => label.destroy(),
     });
   }
 
-  /** Alles zurücksetzen (Rematch). */
   resetVisuals() {
     for (const c of this.towerSprites.values()) c.destroy();
     for (const c of this.enemySprites.values()) c.destroy();

@@ -29,8 +29,14 @@ export function injectStyles(): void {
 html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); overflow: hidden;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text); }
 #app { position: relative; width: 100%; height: 100%; }
-#game { position: absolute; inset: 0; display: grid; place-items: center; }
-#game canvas { image-rendering: pixelated; }
+/* Spielfeld und Seitenleiste teilen sich den Platz — die Leiste liegt NICHT
+   mehr über dem Canvas, sonst verdeckt sie die eigene Basis. */
+#layout { display: grid; grid-template-columns: 1fr 268px; width: 100%; height: 100%; }
+#game { position: relative; min-width: 0; display: grid; place-items: center; overflow: hidden; }
+#game canvas { image-rendering: pixelated; display: block; }
+#side { background: rgba(12,15,22,.97); border-left: 2px solid var(--border);
+  overflow-y: auto; display: none; }
+#side.active { display: block; }
 
 #ui { position: absolute; inset: 0; pointer-events: none; }
 #ui > * { pointer-events: auto; }
@@ -70,7 +76,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 #hud.active { display: block; }
 #hud > * { pointer-events: auto; }
 
-.topbar { position: absolute; top: 0; left: 0; right: 0; height: 46px;
+.topbar { position: absolute; top: 0; left: 0; right: 268px; height: 46px;
   background: linear-gradient(180deg, rgba(12,15,22,.97), rgba(12,15,22,.82));
   border-bottom: 2px solid var(--border); display: flex; align-items: center;
   gap: 18px; padding: 0 14px; font-size: 13px; }
@@ -88,15 +94,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .bar.threat > i { background: var(--threat); }
 .bar.xp > i { background: var(--accent); }
 
-.wavebox { position: absolute; top: 54px; left: 50%; transform: translateX(-50%);
+.wavebox { position: absolute; top: 54px; left: calc(50% - 134px); transform: translateX(-50%);
   background: rgba(12,15,22,.92); border: 2px solid var(--border); border-radius: 5px;
   padding: 6px 14px; font-size: 12px; text-align: center; max-width: 460px; }
 .wavebox .next { color: var(--dim); font-size: 11px; margin-top: 2px; }
 .wavebox.warn { border-color: var(--danger); }
+.callwave { position: absolute; top: 54px; left: calc(50% - 134px);
+  transform: translateX(-50%) translateY(52px); font-size: 12px; padding: 7px 14px;
+  background: #4a3a12; border-color: var(--gold); white-space: nowrap; }
+.callwave:hover:not(:disabled) { background: #6b5418; }
 
-.sidebar { position: absolute; right: 0; top: 46px; bottom: 0; width: 250px;
-  background: rgba(12,15,22,.95); border-left: 2px solid var(--border);
-  padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.sidebar { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
 .section { border: 1px solid var(--border); border-radius: 4px; padding: 8px; }
 .section > h4 { margin: 0 0 7px; font-size: 11px; color: var(--dim);
   text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
@@ -149,7 +157,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .perkcard p { margin: 0; font-size: 11px; color: var(--dim); line-height: 1.45; }
 
 /* Toasts */
-.toasts { position: absolute; top: 56px; right: 262px; display: flex;
+.toasts { position: absolute; top: 56px; right: 280px; display: flex;
   flex-direction: column; gap: 5px; align-items: flex-end; pointer-events: none; }
 .toast { background: rgba(12,15,22,.96); border: 2px solid var(--border);
   border-left-width: 4px; border-radius: 3px; padding: 7px 11px; font-size: 12px;
@@ -176,8 +184,14 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .resulttable tr.winner td { color: var(--gold); }
 
 .hint { color: var(--dim); font-size: 11px; text-align: center; line-height: 1.6; }
+.modelist { display: flex; flex-direction: column; gap: 7px; }
+.modebtn { text-align: left; padding: 11px 13px; line-height: 1.45; }
+.modebtn strong { font-size: 14px; color: var(--gold); }
+.modebtn .tag { display: block; font-size: 11px; color: var(--dim); margin-top: 2px; }
+.modebtn .tag.desc { color: #7d8aa5; }
+.modebtn:hover { border-color: var(--gold); }
 .err { color: var(--danger); font-size: 12px; min-height: 16px; text-align: center; }
-.editmode { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+.editmode { position: absolute; bottom: 10px; left: calc(50% - 134px); transform: translateX(-50%);
   background: rgba(12,15,22,.95); border: 2px solid var(--gold); border-radius: 5px;
   padding: 8px 14px; font-size: 12px; display: none; gap: 10px; align-items: center; }
 .editmode.active { display: flex; }

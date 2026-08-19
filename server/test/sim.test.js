@@ -36,7 +36,9 @@ function run(sim, ms) {
 test("Sim: Gegner laufen die Lane und erreichen den Core", () => {
   const sim = newSim();
   sim.spawnEnemy("grunt");
-  const { leaks } = run(sim, 40000);
+  // Die Referenzkarte ist 43 Felder lang, ein Grunt läuft 1 Feld/s —
+  // also großzügig 90 s simulieren.
+  const { leaks } = run(sim, 90000);
   assert.ok(leaks.length >= 1, "Gegner erreicht den Core");
   assert.equal(sim.enemies.size, 0, "Gegner wird danach entfernt");
 });

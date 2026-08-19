@@ -21,6 +21,7 @@ import {
   safeNumber,
   speedMultiplier,
   tickStatuses,
+  waveArmorBonus,
 } from "@td/shared";
 
 /**
@@ -171,7 +172,13 @@ export class PlayerSim {
 
   // ---------------------------------------------------------------- Gegner
 
-  spawnEnemy(defId: string, opts: { hpMul?: number; speedMul?: number; sent?: boolean; bountyGold?: number } = {}): SimEnemy | null {
+  /** Aktuelle Welle — bestimmt die zusätzliche Rüstung neuer Gegner. */
+  currentWave = 1;
+
+  spawnEnemy(
+    defId: string,
+    opts: { hpMul?: number; speedMul?: number; sent?: boolean; bountyGold?: number; armorAdd?: number } = {}
+  ): SimEnemy | null {
     const def = ENEMIES[defId];
     if (!def) return null;
 
@@ -195,8 +202,11 @@ export class PlayerSim {
       regenAccMs: 0,
       bossPhaseIndex: -1,
       bossPhaseName: "",
+      // Gesendete PvP-Einheiten bekommen KEINE Wellenrüstung — sonst würden
+      // sie im Lategame unverhältnismäßig hart.
+      // (armorAdd wird unten gesetzt)
       speedMul: opts.speedMul ?? 1,
-      armorAdd: 0,
+      armorAdd: opts.armorAdd ?? (opts.sent ? 0 : waveArmorBonus(this.currentWave)),
       facing: 0,
       flying: def.ability === "flying",
       dead: false,

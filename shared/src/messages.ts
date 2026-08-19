@@ -26,6 +26,7 @@ export const MSG = {
   pickPerk: "pick_perk",
   sendUnits: "send_units",
   setSendTarget: "set_send_target",
+  callWave: "call_wave",
   rematch: "rematch",
 } as const;
 

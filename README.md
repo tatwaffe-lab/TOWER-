@@ -14,12 +14,25 @@ npm run dev:server    # Terminal 1 — Match-Server auf :2567
 npm run dev:client    # Terminal 2 — Client auf :5173
 ```
 
-Browser auf `http://localhost:5173` öffnen. Solo startet sofort; für
-Mehrspieler einen Raum erstellen und den angezeigten **Raumcode**
-weitergeben (bis 4 Spieler).
+Browser auf `http://localhost:5173` öffnen und einen der drei Modi wählen.
 
 Im Produktionsbuild liefert der Server den Client gleich mit aus — dann
 genügt `npm start` und `http://localhost:2567`.
+
+## Spielmodi
+
+| Modus | Was es ist |
+|---|---|
+| **Kampagne** | 30 Wellen allein, Bosse alle 5 Wellen. Wer den Core hält, gewinnt. Keine Angriffe auf andere. |
+| **Endlos** | Die Wellen hören nie auf. Ab Welle 30 zieht die Härte zusätzlich an, damit jeder Lauf ein Ende findet. Ergebnis ist die erreichte Welle. |
+| **Gefecht** | 2–4 Teilnehmer mit PvP-Sends. Freie Plätze übernehmen KI-Gegner — „zwei Menschen gegen die KI" funktioniert damit genauso wie 1 gegen 1 oder 4er-FFA, ohne getrennte Modi. |
+
+Im Gefecht spielt die KI nach **denselben Regeln** wie ein Mensch: gleiche
+Kosten, gleiche Cooldowns, gleiche Servervalidierung. Sie hat kein Extra-Gold
+und keinen privilegierten Zugriff — sie entscheidet nur schneller und nach
+einfachen Heuristiken (Bauplätze nach Wegabdeckung, gleichmäßiges Aufwerten,
+Angriff je nach Aggressionsprofil). Drei Stufen von „Rostkommando" bis
+„Leerenkult".
 
 ## Steuerung
 
@@ -31,7 +44,18 @@ genügt `npm start` und `http://localhost:2567`.
 | `Q` / `W` | Commander-Fähigkeit / Ultimate (zielen mit der Maus) |
 | `E` | Lane-Editor ein/aus (nur zwischen den Wellen) |
 | Klick / Shift+Klick im Editor | Weg hinzufügen / entfernen |
+| `Leertaste` | nächste Welle vorziehen (auch während eine läuft) |
 | `Esc` | Auswahl aufheben |
+
+**Wellen vorziehen:** Du musst nicht auf den Countdown warten. Ein Ruf
+schickt die nächste Welle sofort los — auch mitten in der laufenden, sodass
+sich beide überlagern. Belohnt wird das mit Bonusgold, das mit der
+übersprungenen Wartezeit steigt. Maximal drei Wellen Vorsprung.
+
+Im Gefecht gilt der Ruf **nur für dich**: du kannst dein eigenes Tempo
+hochdrehen, ohne den Mitspielern Wellen aufzuzwingen. Wer schneller ruft,
+verdient mehr, riskiert aber, von zwei Wellen gleichzeitig überrannt zu
+werden.
 
 ## Was funktioniert
 
@@ -92,10 +116,12 @@ genügt `npm start` und `http://localhost:2567`.
 ## Tests
 
 ```bash
-npm test          # Unit + Solo-E2E
-npm run test:unit # 46 Unit-Tests (Kampfregeln, Türme, Wellen, Lane-Editor)
+npm test              # Unit + Solo-E2E + Modi/Rematch-E2E
+npm run test:unit     # 56 Unit-Tests (Kampf, Türme, Wellen, Lane, Modi, KI)
 npm run test:server   # Solo-E2E gegen echten Server
 npm run test:multi    # Mehrspieler-E2E mit zwei echten Clients
+npm run test:modes    # Alle drei Modi, KI-Gegner und Rematch-Pfad
+npm run test:callwave # Wellen vorziehen, Stapeln, Vorsprungsgrenze
 npm run balance       # Balance- und Performance-Messung
 node server/e2e/smoke-prod.js   # Produktions-Smoketest (nach npm run build)
 ```
@@ -154,6 +180,47 @@ Spiellogik — dadurch sind Tests reproduzierbar.
 
 Siehe `DEPLOYMENT.md`. Kurz: ein einziger Render-Web-Service, Blueprint liegt
 als `render.yaml` bei, Healthcheck auf `/healthz`.
+
+## Änderungen nach dem ersten Playtest
+
+Rückmeldung war: Gegner ab Welle 4 zu schwach, VS-Modus zu zäh, Karte nutzt
+den Bildschirm nicht, Menü verdeckt die eigene Basis, Grafik zu leblos.
+
+**Balance neu aufgebaut.** Die Gegner-HP wächst jetzt exponentiell
+(`1.135^Welle` mit zusätzlichem Schub ab Welle 10) statt linear. Vorher
+erreichte sie bis Welle 25 nur das 3,2-fache, während die Spielerstärke
+multiplikativ auf leicht das Fünfzigfache wächst — daher der Zusammenbruch
+ab Welle 4. Dazu kommt Rüstung ab Welle 5 und mitwachsendes Kill-Gold.
+Gemessen mit `npm run balance`:
+
+| Verteidigung | Welle 15 | Welle 20 | Welle 25 |
+|---|---|---|---|
+| 5 einfache Türme | Druck | überrannt | überrannt |
+| 12 Türme, spezialisiert | knapp | knapp | überrannt |
+
+**VS-Modus deutlich aggressiver.** Threat regeneriert viermal schneller
+(6,5/s statt 1,6/s), Obergrenze 200 statt 120, Cooldowns von 5–15 s auf
+1,2–4 s gesenkt, Kosten um rund ein Drittel reduziert, Freischaltwellen
+halbiert. Dauerdruck auf den Gegner ist damit möglich; das Risk/Reward-System
+verhindert weiterhin, dass reiner Spam sich rechnet.
+
+**Karte 20×12 statt 14×10**, Kachel 64 px statt 48. Der Weg ist mit 43
+Feldern mehr als doppelt so lang und mäandert durch drei Verteidigungszonen.
+Der Core sitzt nicht mehr am rechten Rand. Baubar sind jetzt auch diagonal
+angrenzende Felder (83 Bauplätze statt 34).
+
+**Layout getrennt.** Spielfeld und Seitenleiste teilen sich den Platz über
+ein CSS-Grid, statt dass die Leiste als Overlay über dem Canvas liegt — sie
+kann die eigene Basis nicht mehr verdecken.
+
+**Grafik neu.** Sprites entstehen jetzt über einen prozeduralen Pixel-Zeichner
+(`client/src/art/pixelCanvas.ts`) mit automatischer Kontur und Licht-/
+Schattenkante. Auflösung verdoppelt (32×32). Türme bestehen aus festem Sockel
+und separatem Geschützturm, der sich zum Ziel dreht. Gegner haben
+Vier-Frame-Laufanimationen, deren Tempo an die tatsächliche Geschwindigkeit
+gekoppelt ist — verlangsamte Gegner laufen sichtbar träger. Dazu Spawn-Portal
+und Core als eigene Bauwerke, vier Bodenvarianten gegen Kachelmuster,
+treibende Staubpartikel, gezackte Blitze, Mündungsrauch und Rückstoß.
 
 ## Bekannte Einschränkungen
 

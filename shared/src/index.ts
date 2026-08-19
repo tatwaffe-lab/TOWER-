@@ -20,6 +20,16 @@ export {
 
 export { Rng, randomSeed } from "./rng";
 
+export type { GameMode, GameModeDefinition, AiProfile } from "./gameModes";
+export {
+  GAME_MODES,
+  GAME_MODE_IDS,
+  AI_PROFILES,
+  gameMode,
+  aiProfileFor,
+  endlessExtraMultiplier,
+} from "./gameModes";
+
 export type {
   AttackKind,
   StatusApplication,
@@ -50,6 +60,8 @@ export {
   bossForWave,
   waveBudget,
   waveHpMultiplier,
+  waveArmorBonus,
+  waveGoldMultiplier,
 } from "./enemyData";
 
 export type { WaveEntry, WavePlan } from "./waveDirector";
@@ -77,7 +89,7 @@ export {
 export type { SendUnitDefinition } from "./sendData";
 export { SEND_UNITS, SEND_IDS, THREAT_MAX, THREAT_REGEN_PER_SEC, THREAT_PER_WAVE, defenderReward, sendAvailable } from "./sendData";
 
-export { createReferenceMap, tileAt } from "./laneGrid";
+export { createReferenceMap, tileAt, recomputeBuildableTiles, GRID_WIDTH, GRID_HEIGHT, GRID_TILE_SIZE } from "./laneGrid";
 export { findPath, isMapValid } from "./pathfinder";
 
 export type { SerializedLaneMap, ValidationResult, EditAction, EditRequest } from "./laneEditor";

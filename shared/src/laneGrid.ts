@@ -1,70 +1,88 @@
 import { GridConfig, GridCoord, LaneGrid, TileKind } from "./gridTypes";
 
+export const GRID_WIDTH = 20;
+export const GRID_HEIGHT = 12;
+export const GRID_TILE_SIZE = 64;
+
 /**
- * Builds the Phase 1 reference map: a single fixed S-shaped lane from a
- * spawn portal to the core, on a small grid. This is intentionally simple —
- * Lane Editing (Master Prompt §14) is a Phase 4 system. What matters here is
- * that the grid/pathfinding data model is already the one later phases will
- * extend (buildable tiles beside the lane, spawn/core anchors, etc.).
+ * Referenzkarte: 20x12 Felder, mäanderförmiger Weg vom Spawn links zum Core.
  *
- * Lives in @td/shared (not server-only) so the client can render the same
- * map without a network round trip, and so a future lane editor can run the
- * identical pathfinding for its live preview (see pathfinder.ts).
+ * Bewusst breit statt quadratisch, damit die Karte auf einem Breitbildschirm
+ * den Platz nutzt. Der Core sitzt NICHT am rechten Rand, sondern eine Spalte
+ * davor und mittig — sonst verdeckt die Seitenleiste die eigene Basis.
+ *
+ * Der Weg ist lang genug, dass mehrere Verteidigungszonen entstehen: eine
+ * frühe Kammer, ein langer Mittelgang und ein Endabschnitt vor dem Core.
  */
 export function createReferenceMap(): LaneGrid {
-  const config: GridConfig = { width: 14, height: 10, tileSize: 48 };
+  const config: GridConfig = { width: GRID_WIDTH, height: GRID_HEIGHT, tileSize: GRID_TILE_SIZE };
   const tiles: TileKind[][] = Array.from({ length: config.height }, () =>
     Array.from({ length: config.width }, () => "empty" as TileKind)
   );
 
-  const path: GridCoord[] = [
-    { x: 0, y: 1 },
-    { x: 1, y: 1 },
-    { x: 2, y: 1 },
-    { x: 3, y: 1 },
-    { x: 4, y: 1 },
-    { x: 4, y: 2 },
-    { x: 4, y: 3 },
-    { x: 4, y: 4 },
-    { x: 5, y: 4 },
-    { x: 6, y: 4 },
-    { x: 7, y: 4 },
-    { x: 7, y: 5 },
-    { x: 7, y: 6 },
-    { x: 7, y: 7 },
-    { x: 8, y: 7 },
-    { x: 9, y: 7 },
-    { x: 10, y: 7 },
-    { x: 11, y: 7 },
-    { x: 12, y: 7 },
-    { x: 13, y: 7 },
-  ];
+  const path: GridCoord[] = [];
+  const add = (x: number, y: number) => path.push({ x, y });
 
-  for (const { x, y } of path) {
-    tiles[y][x] = "lane";
-  }
+  // Eintritt links oben
+  for (let x = 0; x <= 4; x++) add(x, 1);
+  // Runter in die erste Kammer
+  for (let y = 2; y <= 4; y++) add(4, y);
+  // Nach rechts durch die Kammer
+  for (let x = 5; x <= 9; x++) add(9 - (9 - x), 4);
+  // Runter
+  for (let y = 5; y <= 8; y++) add(9, y);
+  // Nach links (Schleife zurück, erzeugt eine zweite Kammer)
+  for (let x = 8; x >= 3; x--) add(x, 8);
+  // Runter zum unteren Gang
+  for (let y = 9; y <= 10; y++) add(3, y);
+  // Langer Weg nach rechts
+  for (let x = 4; x <= 16; x++) add(x, 10);
+  // Hoch zum Core
+  for (let y = 9; y >= 6; y--) add(16, y);
+  // Kurzes Stück nach rechts auf den Core
+  add(17, 6);
+
+  for (const { x, y } of path) tiles[y][x] = "lane";
 
   const spawn = path[0];
   const core = path[path.length - 1];
   tiles[spawn.y][spawn.x] = "spawn";
   tiles[core.y][core.x] = "core";
 
-  // Mark tiles adjacent to the lane as buildable (tower placement).
-  for (const { x, y } of path) {
-    for (const [dx, dy] of [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ]) {
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= config.width || ny >= config.height) continue;
-      if (tiles[ny][nx] === "empty") tiles[ny][nx] = "buildable";
-    }
-  }
+  recomputeBuildableTiles(tiles, config);
 
   return { config, tiles, spawn, core };
+}
+
+/**
+ * Baubare Felder sind alle freien Felder, die an den Weg grenzen — inklusive
+ * Diagonalen. Dadurch entstehen breitere Bauzonen und echte Entscheidungen,
+ * wo eine Killzone entsteht.
+ */
+export function recomputeBuildableTiles(tiles: TileKind[][], config: GridConfig): void {
+  const neighbours = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+  ];
+
+  for (let y = 0; y < config.height; y++) {
+    for (let x = 0; x < config.width; x++) {
+      const tile = tiles[y][x];
+      if (tile !== "lane" && tile !== "spawn" && tile !== "core") continue;
+      for (const [dx, dy] of neighbours) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= config.width || ny >= config.height) continue;
+        if (tiles[ny][nx] === "empty") tiles[ny][nx] = "buildable";
+      }
+    }
+  }
 }
 
 export function tileAt(grid: LaneGrid, coord: GridCoord): TileKind | undefined {

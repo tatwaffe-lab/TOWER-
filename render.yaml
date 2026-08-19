@@ -14,12 +14,24 @@ services:
     # nicht. 750 Freistunden pro Monat und Workspace.
     plan: free
     region: frankfurt
+    # `--include=dev` ist entscheidend: TypeScript, Vite und die
+    # Rollup-Binärdateien liegen in den devDependencies. Ohne das Flag lässt
+    # npm sie weg, sobald NODE_ENV=production gesetzt ist (Render nutzt
+    # dieselbe Umgebung für Build und Laufzeit), und der Build bricht mit
+    # "Could not find a declaration file for module 'express'" ab.
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /healthz
-       envVars:
+    envVars:
       - key: NODE_VERSION
         value: "22"
+      # Bewusst KEIN NODE_ENV=production:
+      # Render nutzt dieselbe Umgebung für Build und Laufzeit. Mit
+      # NODE_ENV=production lässt `npm ci` die devDependencies weg — genau
+      # dort liegen aber TypeScript, Vite und die Rollup-Binärdateien, die
+      # zum Bauen gebraucht werden. Der Servercode selbst liest NODE_ENV
+      # nirgends aus, es geht also nichts verloren.
+      #
       # PORT setzt Render automatisch; der Server liest ihn aus process.env.
       # HOST bleibt auf 0.0.0.0 (Standard im Code), damit Render den Dienst
       # erreichen kann.

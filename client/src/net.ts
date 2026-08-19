@@ -31,7 +31,7 @@ function createClient(): Client {
   return new Client(SERVER_URL);
 }
 
-export async function createMatch(name: string, mode: "solo" | "pvp"): Promise<MatchRoom> {
+export async function createMatch(name: string, mode: string): Promise<MatchRoom> {
   const client = createClient();
   const room = await client.create<MatchState>("match", { name, mode }, MatchState);
   rememberReconnect(room);
@@ -47,7 +47,7 @@ export async function joinByCode(name: string, roomCode: string): Promise<MatchR
 
 export async function quickJoin(name: string): Promise<MatchRoom> {
   const client = createClient();
-  const room = await client.joinOrCreate<MatchState>("match", { name, mode: "pvp" }, MatchState);
+  const room = await client.joinOrCreate<MatchState>("match", { name, mode: "battle" }, MatchState);
   rememberReconnect(room);
   return room;
 }
@@ -63,6 +63,16 @@ function rememberReconnect(room: MatchRoom): void {
     room.onLeave(() => sessionStorage.removeItem(RECONNECT_KEY));
   } catch {
     // sessionStorage kann blockiert sein — Reconnect ist dann nur nicht verfügbar.
+  }
+}
+
+/** Löscht das Reconnect-Token — nötig beim bewussten Verlassen, sonst
+ *  würde das Hauptmenü sofort wieder in das alte Match zurückspringen. */
+export function clearReconnectToken(): void {
+  try {
+    sessionStorage.removeItem(RECONNECT_KEY);
+  } catch {
+    /* sessionStorage kann blockiert sein */
   }
 }
 

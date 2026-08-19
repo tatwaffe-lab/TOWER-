@@ -36,8 +36,14 @@ import {
   serializeLaneMap,
   validate,
   validateEdit,
+  waveGoldMultiplier,
   xpForLevel,
+  gameMode,
+  aiProfileFor,
+  endlessExtraMultiplier,
+  GameModeDefinition,
 } from "@td/shared";
+import { AiPlayer } from "../sim/AiPlayer";
 import { PlayerSim } from "../sim/PlayerSim";
 
 const TICK_MS = 100;
@@ -46,15 +52,35 @@ const MAX_PLAYERS = 4;
 const PREP_TIME_MS = 20000;
 const WAVE_GAP_MS = 12000;
 const RECONNECT_SECONDS = 60;
-const MAX_WAVES = 30;
+/**
+ * Wie viele Wellen ein Spieler dem globalen Zähler vorauseilen darf.
+ * Begrenzt, damit weder die Simulation noch der Spieler von einem
+ * versehentlichen Dauerklick überrollt wird.
+ */
+const MAX_WAVES_AHEAD = 3;
+
+/** Ein wartender Spawn — trägt seine eigene Wellenskalierung mit sich. */
+interface QueuedSpawn {
+  defId: string;
+  hpMul: number;
+  wave: number;
+}
 
 interface PlayerRuntime {
   sim: PlayerSim;
-  spawnQueue: string[];
+  /**
+   * Kann mehrere Wellen gleichzeitig enthalten: wer vorzeitig ruft, stapelt
+   * die nächste Welle auf die laufende. Deshalb trägt jeder Eintrag seine
+   * eigene HP-Skalierung — sonst bekäme eine vorgezogene Welle die Werte
+   * der alten.
+   */
+  spawnQueue: QueuedSpawn[];
   spawnTimerMs: number;
   spawnIntervalMs: number;
   waveHpMul: number;
   pendingPerkLevel: number;
+  /** Gesetzt, wenn dieser Teilnehmer von der KI gesteuert wird. */
+  ai?: AiPlayer;
 }
 
 /**
@@ -73,10 +99,17 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   private matchOver = false;
   private eliminationOrder: string[] = [];
 
+  private mode: GameModeDefinition = gameMode("campaign");
+
   onCreate(options: { mode?: string; roomCode?: string } = {}) {
     this.setState(new MatchState());
     this.state.seed = randomSeed();
-    this.state.mode = options.mode === "pvp" ? "pvp" : "solo";
+    const mode = gameMode(options.mode ?? "campaign");
+    this.mode = mode;
+    this.state.mode = mode.id;
+    this.state.maxWaves = mode.maxWaves;
+    this.state.sendsEnabled = mode.sendsEnabled;
+    this.maxClients = mode.maxHumans;
     this.state.roomCode = (options.roomCode ?? this.generateRoomCode()).toUpperCase().slice(0, 6);
     this.rng = new Rng(this.state.seed);
     this.setPatchRate(1000 / PATCH_HZ);
@@ -200,6 +233,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       }
     });
 
+    this.onMessage(MSG.callWave, (client) => this.handleCallWave(client));
+
     this.onMessage(MSG.rematch, (client) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || this.state.phase !== "result") return;
@@ -236,7 +271,6 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.applyCommanderBase(player);
     this.refreshSendTargets();
 
-    if (this.state.players.size > 1) this.state.mode = "pvp";
   }
 
   /**
@@ -373,14 +407,88 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       player.goldEarned = 0;
       player.sendsLaunched = 0;
       player.survivedWaves = 0;
+      player.waveIndex = 0;
+      player.wavesAhead = 0;
       player.placement = 0;
       player.commanderXp = 0;
       player.commanderLevel = 1;
       player.perks.clear();
       player.perkOffer.clear();
     }
+    this.spawnAiOpponents();
     this.previewNextWave();
     this.refreshSendTargets();
+  }
+
+  /**
+   * Füllt den Gefechtsmodus mit KI-Gegnern auf. Sie bekommen einen eigenen
+   * Eintrag in der Spielerliste und eine eigene Lane — für den Rest des
+   * Servers sind sie ganz normale Teilnehmer.
+   */
+  private spawnAiOpponents() {
+    if (this.mode.fillWithAiTo <= 0) return;
+    const humans = [...this.state.players.values()].filter((p) => !p.isAi).length;
+    const needed = Math.max(0, this.mode.fillWithAiTo - humans);
+
+    for (let i = 0; i < needed; i++) {
+      const profile = aiProfileFor(i);
+      const id = `ai_${i + 1}`;
+      if (this.state.players.has(id)) continue;
+
+      const player = new PlayerState();
+      player.sessionId = id;
+      player.name = profile.name;
+      player.isAi = true;
+      player.ready = true;
+      player.commanderId = i % 2 === 0 ? "warlord" : "engineer";
+      this.state.players.set(id, player);
+
+      const sim = new PlayerSim(new Rng(this.state.seed + 4801 * (i + 1)));
+      sim.commanderId = player.commanderId as CommanderId;
+      this.runtimes.set(id, {
+        sim,
+        spawnQueue: [],
+        spawnTimerMs: 0,
+        spawnIntervalMs: 800,
+        waveHpMul: 1,
+        pendingPerkLevel: 0,
+        ai: new AiPlayer(profile, new Rng(this.state.seed + 991 * (i + 1))),
+      });
+
+      player.laneMapJson = JSON.stringify(serializeLaneMap(sim.grid));
+      this.applyCommanderBase(player);
+    }
+  }
+
+  /** Führt eine KI-Entscheidung aus — über dieselben Wege wie ein Mensch. */
+  private tickAi(sessionId: string, rt: PlayerRuntime, dtMs: number) {
+    const player = this.state.players.get(sessionId);
+    if (!player || !rt.ai || player.defeated) return;
+
+    const decision = rt.ai.think(dtMs, {
+      sim: rt.sim,
+      gold: player.gold,
+      threat: player.threat,
+      wave: this.state.wave,
+      sendsEnabled: this.state.sendsEnabled,
+      hasTarget: !!player.sendTargetId,
+    });
+    if (!decision) return;
+
+    switch (decision.kind) {
+      case "build":
+        this.placeTowerFor(sessionId, decision.defId!, decision.x!, decision.y!);
+        break;
+      case "upgrade":
+        this.upgradeTowerFor(sessionId, decision.towerId!);
+        break;
+      case "specialize":
+        this.specializeTowerFor(sessionId, decision.towerId!, decision.specializationId!);
+        break;
+      case "send":
+        this.sendUnitsFor(sessionId, decision.sendId!, player.sendTargetId);
+        break;
+    }
   }
 
   private previewNextWave() {
@@ -388,23 +496,88 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.state.nextWavePreview = describeWave(plan);
   }
 
+  /** Globale Wellenfreigabe: jeder, der noch nicht so weit ist, bekommt sie. */
   private startWave() {
     this.state.wave += 1;
-    this.state.waveActive = true;
     this.state.laneEditingOpen = false;
+    this.state.phase = "playing";
 
-    for (const [sessionId, rt] of this.runtimes) {
+    for (const [sessionId] of this.runtimes) {
       const player = this.state.players.get(sessionId);
       if (!player || player.defeated) continue;
-      // Jeder Spieler bekommt dieselbe Wellenzusammensetzung (Fairness),
-      // aber eine eigene Spawn-Reihenfolge.
-      const plan = planWave(this.state.wave, this.state.players.size, new Rng(this.state.seed + this.state.wave));
-      rt.spawnQueue = buildSpawnQueue(plan, new Rng(this.state.seed + this.state.wave + sessionId.length));
-      rt.spawnIntervalMs = plan.spawnIntervalMs;
-      rt.spawnTimerMs = 0;
-      rt.waveHpMul = plan.hpMultiplier;
+      // Wer vorgezogen hat, ist schon weiter — für den passiert hier nichts.
+      if (player.waveIndex >= this.state.wave) continue;
+      this.releaseWaveTo(sessionId, this.state.wave);
     }
-    this.state.phase = "playing";
+    this.state.waveActive = true;
+  }
+
+  /**
+   * Hängt eine konkrete Welle an die Warteschlange eines Spielers an.
+   *
+   * Bewusst anhängend statt ersetzend: läuft noch eine Welle, spawnen beide
+   * parallel. Genau das macht das vorzeitige Rufen zum Risiko.
+   */
+  private releaseWaveTo(sessionId: string, wave: number) {
+    const rt = this.runtimes.get(sessionId);
+    const player = this.state.players.get(sessionId);
+    if (!rt || !player) return;
+
+    const plan = planWave(wave, this.state.players.size, new Rng(this.state.seed + wave));
+    const order = buildSpawnQueue(plan, new Rng(this.state.seed + wave + sessionId.length));
+    const hpMul =
+      plan.hpMultiplier * (this.state.mode === "endless" ? endlessExtraMultiplier(wave) : 1);
+
+    for (const defId of order) rt.spawnQueue.push({ defId, hpMul, wave });
+
+    // Kürzestes Intervall gewinnt, damit gestapelte Wellen nicht zäh wirken.
+    rt.spawnIntervalMs = Math.min(rt.spawnIntervalMs || plan.spawnIntervalMs, plan.spawnIntervalMs);
+    rt.sim.currentWave = Math.max(rt.sim.currentWave, wave);
+
+    player.waveIndex = Math.max(player.waveIndex, wave);
+    player.wavesAhead = Math.max(0, player.waveIndex - this.state.wave);
+    player.survivedWaves = Math.max(player.survivedWaves, wave - 1);
+  }
+
+  /**
+   * Spieler ruft die nächste Welle vorzeitig — auch mitten in einer
+   * laufenden. Belohnt wird die verbleibende Vorbereitungszeit: je früher
+   * gerufen, desto mehr Bonusgold.
+   */
+  private handleCallWave(client: Client) {
+    const player = this.state.players.get(client.sessionId);
+    const rt = this.runtimes.get(client.sessionId);
+    if (!player || !rt || player.defeated) return;
+    if (this.state.phase !== "playing" && this.state.phase !== "preparing") return;
+
+    if (player.wavesAhead >= MAX_WAVES_AHEAD) {
+      this.notify(client, "warn", `Höchstens ${MAX_WAVES_AHEAD} Wellen im Voraus.`);
+      return;
+    }
+    if (this.state.maxWaves > 0 && player.waveIndex >= this.state.maxWaves) {
+      this.notify(client, "warn", "Es gibt keine weitere Welle mehr.");
+      return;
+    }
+
+    const nextWave = player.waveIndex + 1;
+
+    // Bonus: Grundprämie plus Anteil der übersprungenen Wartezeit.
+    const skipped = Math.max(0, this.waveTimerMs);
+    const timeBonus = Math.round((skipped / 1000) * 4);
+    const bonus = 30 + nextWave * 6 + timeBonus;
+
+    this.releaseWaveTo(client.sessionId, nextWave);
+    this.grantGold(player, bonus);
+    player.threat = Math.min(THREAT_MAX, player.threat + 10);
+
+    // Erste Phase überspringen, wenn noch niemand gestartet ist.
+    if (this.state.phase === "preparing") {
+      this.state.phase = "playing";
+      this.state.laneEditingOpen = false;
+    }
+    this.state.waveActive = true;
+
+    this.notify(client, "info", `Welle ${nextWave} vorgezogen: +${bonus} Gold`);
   }
 
   private finishWave() {
@@ -416,7 +589,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       const player = this.state.players.get(sessionId);
       if (!player || player.defeated) continue;
 
-      player.survivedWaves = this.state.wave;
+      player.survivedWaves = Math.max(player.survivedWaves, player.waveIndex);
       const mods = rt.sim.modifiers();
 
       // Wellenprämie + Einkommen aus Raffinerie-Baken und Perks.
@@ -432,7 +605,9 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     this.previewNextWave();
 
-    if (this.state.wave >= MAX_WAVES) {
+    // Nur die Kampagne hat ein Wellenlimit; Endlos und Gefecht laufen
+    // weiter, bis jemand fällt.
+    if (this.state.maxWaves > 0 && this.state.wave >= this.state.maxWaves) {
       this.endMatch("Alle Wellen überstanden");
     }
   }
@@ -496,8 +671,23 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   // --------------------------------------------------------- Turmaktionen
 
   private handlePlaceTower(client: Client, defId: string, x: number, y: number) {
-    const player = this.state.players.get(client.sessionId);
-    const rt = this.runtimes.get(client.sessionId);
+    this.placeTowerFor(client.sessionId, defId, x, y, (level, text) => this.notify(client, level, text));
+  }
+
+  /**
+   * Turmbau — gemeinsamer Weg für Menschen und KI. Die KI übergibt keinen
+   * `notify`-Rückruf, bekommt also keine Hinweistexte, unterliegt aber
+   * exakt denselben Prüfungen.
+   */
+  private placeTowerFor(
+    sessionId: string,
+    defId: string,
+    x: number,
+    y: number,
+    notify?: (level: "info" | "warn" | "error", text: string) => void
+  ) {
+    const player = this.state.players.get(sessionId);
+    const rt = this.runtimes.get(sessionId);
     if (!player || !rt || player.defeated) return;
     if (this.state.phase !== "playing" && this.state.phase !== "preparing") return;
 
@@ -505,17 +695,17 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (!def) return;
 
     if (rt.sim.grid.tiles[y]?.[x] !== "buildable") {
-      this.notify(client, "warn", "Hier kann nicht gebaut werden.");
+      notify?.("warn", "Hier kann nicht gebaut werden.");
       return;
     }
     if (rt.sim.towerAt(x, y)) {
-      this.notify(client, "warn", "Feld ist bereits belegt.");
+      notify?.("warn", "Feld ist bereits belegt.");
       return;
     }
 
     const cost = Math.round(def.cost * rt.sim.modifiers().buildCostMul * rt.sim.activeBuildCostMul());
     if (player.gold < cost) {
-      this.notify(client, "warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
       return;
     }
 
@@ -524,7 +714,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     const view = new TowerState();
     view.id = tower.id;
-    view.ownerId = client.sessionId;
+    view.ownerId = sessionId;
     view.defId = defId;
     view.x = x;
     view.y = y;
@@ -533,20 +723,28 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   }
 
   private handleUpgrade(client: Client, towerId: string) {
-    const player = this.state.players.get(client.sessionId);
-    const rt = this.runtimes.get(client.sessionId);
+    this.upgradeTowerFor(client.sessionId, towerId, (level, text) => this.notify(client, level, text));
+  }
+
+  private upgradeTowerFor(
+    sessionId: string,
+    towerId: string,
+    notify?: (level: "info" | "warn" | "error", text: string) => void
+  ) {
+    const player = this.state.players.get(sessionId);
+    const rt = this.runtimes.get(sessionId);
     const tower = rt?.sim.towers.get(towerId);
     if (!player || !rt || !tower || player.defeated) return;
 
     const def = TOWERS[tower.defId];
     const baseCost = nextUpgradeCost(def, tower.level);
     if (baseCost === null) {
-      this.notify(client, "warn", "Turm ist voll ausgebaut — jetzt spezialisieren.");
+      notify?.("warn", "Turm ist voll ausgebaut — jetzt spezialisieren.");
       return;
     }
     const cost = Math.round(baseCost * rt.sim.modifiers().upgradeCostMul * rt.sim.activeBuildCostMul());
     if (player.gold < cost) {
-      this.notify(client, "warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
       return;
     }
 
@@ -557,14 +755,25 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   }
 
   private handleSpecialize(client: Client, towerId: string, specializationId: string) {
-    const player = this.state.players.get(client.sessionId);
-    const rt = this.runtimes.get(client.sessionId);
+    this.specializeTowerFor(client.sessionId, towerId, specializationId, (level, text) =>
+      this.notify(client, level, text)
+    );
+  }
+
+  private specializeTowerFor(
+    sessionId: string,
+    towerId: string,
+    specializationId: string,
+    notify?: (level: "info" | "warn" | "error", text: string) => void
+  ) {
+    const player = this.state.players.get(sessionId);
+    const rt = this.runtimes.get(sessionId);
     const tower = rt?.sim.towers.get(towerId);
     if (!player || !rt || !tower || player.defeated) return;
 
     const def = TOWERS[tower.defId];
     if (!canSpecialize(def, tower.level, tower.specializationId)) {
-      this.notify(client, "warn", "Erst voll ausbauen, dann spezialisieren.");
+      notify?.("warn", "Erst voll ausbauen, dann spezialisieren.");
       return;
     }
     const spec = def.specializations.find((s) => s.id === specializationId);
@@ -572,7 +781,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     const cost = Math.round(spec.cost * rt.sim.modifiers().upgradeCostMul * rt.sim.activeBuildCostMul());
     if (player.gold < cost) {
-      this.notify(client, "warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
       return;
     }
 
@@ -580,7 +789,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     tower.specializationId = specializationId;
     const view = this.state.towers.get(towerId);
     if (view) view.specializationId = specializationId;
-    this.notify(client, "info", `${def.name}: ${spec.name} freigeschaltet.`);
+    notify?.("info", `${def.name}: ${spec.name} freigeschaltet.`);
   }
 
   private handleSell(client: Client, towerId: string) {
@@ -774,43 +983,56 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   // ------------------------------------------------------------ PvP-Sends
 
   private handleSend(client: Client, sendId: string, targetId: string) {
-    const player = this.state.players.get(client.sessionId);
-    const rt = this.runtimes.get(client.sessionId);
+    this.sendUnitsFor(client.sessionId, sendId, targetId, (level, text) => this.notify(client, level, text));
+  }
+
+  private sendUnitsFor(
+    sessionId: string,
+    sendId: string,
+    targetId: string,
+    notify?: (level: "info" | "warn" | "error", text: string) => void
+  ) {
+    const player = this.state.players.get(sessionId);
+    const rt = this.runtimes.get(sessionId);
     if (!player || !rt || player.defeated || this.state.phase !== "playing") return;
 
     const def = SEND_UNITS[sendId];
     if (!def) return;
 
+    if (!this.state.sendsEnabled) {
+      notify?.("warn", "In diesem Modus gibt es keine Angriffe.");
+      return;
+    }
     if (this.state.players.size < 2) {
-      this.notify(client, "warn", "Sends brauchen mindestens zwei Spieler.");
+      notify?.("warn", "Sends brauchen mindestens zwei Teilnehmer.");
       return;
     }
     if (!sendAvailable(def, this.state.wave)) {
-      this.notify(client, "warn", `${def.name} ist erst ab Welle ${def.minWave} verfügbar.`);
+      notify?.("warn", `${def.name} ist erst ab Welle ${def.minWave} verfügbar.`);
       return;
     }
     if (player.sendCooldownMs > 0) {
-      this.notify(client, "warn", "Send lädt noch.");
+      notify?.("warn", "Send lädt noch.");
       return;
     }
 
     const chosen = targetId || player.sendTargetId;
     // Selbstziel und ungültige/besiegte Ziele werden hart abgelehnt.
-    if (!chosen || chosen === client.sessionId) {
-      this.notify(client, "warn", "Ungültiges Ziel.");
+    if (!chosen || chosen === sessionId) {
+      notify?.("warn", "Ungültiges Ziel.");
       return;
     }
     const targetPlayer = this.state.players.get(chosen);
     const targetRt = this.runtimes.get(chosen);
     if (!targetPlayer || !targetRt || targetPlayer.defeated) {
-      this.notify(client, "warn", "Ziel ist nicht mehr im Spiel.");
+      notify?.("warn", "Ziel ist nicht mehr im Spiel.");
       return;
     }
 
     const mods = rt.sim.modifiers();
     const cost = Math.max(1, Math.round(def.cost * mods.sendCostMul * rt.sim.activeSendCostMul()));
     if (player.threat < cost) {
-      this.notify(client, "warn", `Nicht genug Threat (${cost} nötig).`);
+      notify?.("warn", `Nicht genug Threat (${cost} nötig).`);
       return;
     }
 
@@ -829,7 +1051,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       targetRt.sim.spawnEnemy(def.spawns, { hpMul, speedMul, sent: true, bountyGold: bounty });
     }
 
-    this.notify(client, "info", `${def.name} an ${targetPlayer.name} geschickt.`);
+    notify?.("info", `${def.name} an ${targetPlayer.name} geschickt.`);
     const targetClient = this.clients.find((c) => c.sessionId === chosen);
     if (targetClient) this.notify(targetClient, "warn", `${player.name} greift an: ${def.name}!`);
   }
@@ -872,6 +1094,9 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
       if (player.defeated) continue;
 
+      // KI-Teilnehmer treffen ihre Entscheidungen im selben Tick.
+      if (rt.ai) this.tickAi(sessionId, rt, dt);
+
       // Threat-Regeneration
       const mods = rt.sim.modifiers();
       player.threat = Math.min(
@@ -883,8 +1108,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       if (rt.spawnQueue.length > 0) {
         rt.spawnTimerMs -= dt;
         while (rt.spawnTimerMs <= 0 && rt.spawnQueue.length > 0) {
-          const defId = rt.spawnQueue.shift()!;
-          rt.sim.spawnEnemy(defId, { hpMul: rt.waveHpMul });
+          const next = rt.spawnQueue.shift()!;
+          // Jeder Eintrag bringt seine eigene Skalierung mit — wichtig, wenn
+          // mehrere Wellen gleichzeitig laufen.
+          rt.sim.currentWave = next.wave;
+          rt.sim.spawnEnemy(next.defId, { hpMul: next.hpMul });
           rt.spawnTimerMs += rt.spawnIntervalMs;
         }
       }
@@ -897,8 +1125,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       const towerKills = rt.sim.tickTowers(dt);
       rt.sim.tickEffects(dt);
 
+      const goldScale = waveGoldMultiplier(this.state.wave);
       for (const kill of [...statusKills, ...towerKills]) {
-        this.grantGold(player, kill.gold);
+        // Kill-Gold wächst mit der Welle mit, sonst kann der Spieler die
+        // exponentiell härteren Gegner wirtschaftlich nicht beantworten.
+        this.grantGold(player, kill.wasSent ? kill.gold : kill.gold * goldScale);
         this.grantXp(player, kill.xp);
         player.kills += 1;
       }
@@ -916,6 +1147,9 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       totalRemaining += rt.sim.enemies.size + rt.spawnQueue.length;
     }
 
+    for (const player of this.state.players.values()) {
+      player.wavesAhead = Math.max(0, player.waveIndex - this.state.wave);
+    }
     this.state.enemiesRemaining = totalRemaining;
 
     // Welle endet, wenn niemand mehr Gegner oder offene Spawns hat.
@@ -933,15 +1167,30 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
   private checkMatchEnd() {
     if (this.matchOver || this.state.phase !== "playing") return;
-    const alive = [...this.state.players.values()].filter((p) => !p.defeated);
+    const all = [...this.state.players.values()];
+    const alive = all.filter((p) => !p.defeated);
+    const humansAlive = alive.filter((p) => !p.isAi);
 
-    if (this.state.players.size <= 1) {
-      // Solo: Match endet erst mit dem Tod des einzigen Spielers.
-      if (alive.length === 0) this.endMatch("Der Core ist gefallen");
+    // Einzelspielermodi: das Match endet mit dem Tod des Spielers.
+    if (all.filter((p) => !p.isAi).length <= 1 && all.every((p) => !p.isAi)) {
+      if (alive.length === 0) {
+        this.endMatch(
+          this.state.mode === "endless"
+            ? `Bis Welle ${this.state.wave} durchgehalten`
+            : "Der Core ist gefallen"
+        );
+      }
       return;
     }
+
+    // Gefecht: vorbei, wenn nur noch einer steht — oder wenn kein Mensch
+    // mehr lebt (sonst würden die KIs endlos weiterspielen).
     if (alive.length <= 1) {
       this.endMatch(alive.length === 1 ? `${alive[0].name} gewinnt` : "Unentschieden");
+      return;
+    }
+    if (humansAlive.length === 0) {
+      this.endMatch("Alle Spieler sind gefallen — die KI gewinnt");
     }
   }
 
@@ -968,6 +1217,15 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   }
 
   private resetToLobby() {
+    // KI-Teilnehmer entfernen; startMatch() legt sie frisch an. Ohne das
+    // würde sich das Feld mit jedem Rematch mit KIs auffüllen.
+    for (const [id, player] of [...this.state.players]) {
+      if (player.isAi) {
+        this.state.players.delete(id);
+        this.runtimes.delete(id);
+      }
+    }
+
     this.state.phase = "lobby";
     this.state.wave = 0;
     this.state.waveActive = false;
@@ -996,6 +1254,23 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       if (player) {
         player.ready = false;
         player.defeated = false;
+        // Vollständig zurücksetzen: alles, was der Ergebnisbildschirm zeigt,
+        // muss weg — sonst schleppt das nächste Match alte Platzierungen und
+        // Statistiken mit und das Rematch wirkt kaputt.
+        player.placement = 0;
+        player.kills = 0;
+        player.leaked = 0;
+        player.goldEarned = 0;
+        player.sendsLaunched = 0;
+        player.survivedWaves = 0;
+        player.waveIndex = 0;
+        player.wavesAhead = 0;
+        player.commanderXp = 0;
+        player.commanderLevel = 1;
+        player.threat = 0;
+        player.abilityCooldownMs = 0;
+        player.ultimateCooldownMs = 0;
+        player.sendCooldownMs = 0;
         player.perks.clear();
         player.perkOffer.clear();
         player.laneMapJson = JSON.stringify(serializeLaneMap(rt.sim.grid));

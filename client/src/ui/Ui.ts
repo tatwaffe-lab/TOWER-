@@ -1,5 +1,8 @@
 import {
   COMMANDERS,
+  GAME_MODES,
+  GAME_MODE_IDS,
+  gameMode,
   COMMANDER_IDS,
   CommanderId,
   MSG,
@@ -22,8 +25,16 @@ import {
   xpForLevel,
 } from "@td/shared";
 import { audio } from "../audio/AudioManager";
+import { TILE_SIZE } from "../art/palette";
 import { MatchScene } from "../scenes/MatchScene";
-import { MatchRoom, createMatch, describeConnectionError, joinByCode, quickJoin, tryReconnect } from "../net";
+import {
+  MatchRoom,
+  clearReconnectToken,
+  createMatch,
+  describeConnectionError,
+  joinByCode,
+  tryReconnect,
+} from "../net";
 
 const el = <T extends HTMLElement = HTMLElement>(html: string): T => {
   const tpl = document.createElement("template");
@@ -40,6 +51,8 @@ const el = <T extends HTMLElement = HTMLElement>(html: string): T => {
  */
 export class Ui {
   private root: HTMLElement;
+  /** Eigener Bereich rechts — liegt NICHT über dem Spielfeld. */
+  private side: HTMLElement;
   private room: MatchRoom | null = null;
   private scene: MatchScene | null = null;
   private state: MatchState | null = null;
@@ -52,8 +65,9 @@ export class Ui {
   private lastPerkOffer = "";
   private playerName = "";
 
-  constructor(root: HTMLElement) {
+  constructor(root: HTMLElement, side: HTMLElement) {
     this.root = root;
+    this.side = side;
   }
 
   attachScene(scene: MatchScene) {
@@ -65,22 +79,31 @@ export class Ui {
   showMenu(errorText = "") {
     audio.unlock();
     this.root.innerHTML = "";
+    this.root.dataset.screen = "menu";
     const savedName = localStorage.getItem("td_name") ?? "";
 
     const screen = el(`
       <div class="screen">
         <h1>ARCANE INDUSTRY</h1>
-        <div class="sub">Multiplayer Tower Defense · 1–4 Spieler</div>
-        <div class="panel col" style="min-width:360px">
+        <div class="sub">Tower Defense · Kampagne, Endlos und Gefecht</div>
+        <div class="panel col" style="min-width:520px">
           <label class="row"><span style="width:70px;color:var(--dim);font-size:12px">Name</span>
             <input id="name" maxlength="16" placeholder="Dein Name" value="${savedName}" style="flex:1"></label>
-          <button id="solo" class="primary">Solo starten</button>
-          <button id="host">Mehrspieler-Raum erstellen</button>
-          <div class="row">
+
+          <div class="modelist">
+            ${GAME_MODE_IDS.map(
+              (id) => `<button class="modebtn" data-mode="${id}">
+                <strong>${escapeHtml(GAME_MODES[id].name)}</strong>
+                <span class="tag">${escapeHtml(GAME_MODES[id].tagline)}</span>
+                <span class="tag desc">${escapeHtml(GAME_MODES[id].description)}</span>
+              </button>`
+            ).join("")}
+          </div>
+
+          <div class="row" style="margin-top:4px">
             <input id="code" maxlength="6" placeholder="RAUMCODE" style="flex:1;text-transform:uppercase">
             <button id="join">Beitreten</button>
           </div>
-          <button id="quick">Schnellsuche</button>
           <div class="err" id="err">${errorText}</div>
         </div>
         <div class="hint">
@@ -112,9 +135,12 @@ export class Ui {
       }
     };
 
-    screen.querySelector("#solo")!.addEventListener("click", () => connect(() => createMatch(getName(), "solo")));
-    screen.querySelector("#host")!.addEventListener("click", () => connect(() => createMatch(getName(), "pvp")));
-    screen.querySelector("#quick")!.addEventListener("click", () => connect(() => quickJoin(getName())));
+    screen.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.dataset.mode!;
+        void connect(() => createMatch(getName(), mode));
+      });
+    });
     screen.querySelector("#join")!.addEventListener("click", () => {
       const code = screen.querySelector<HTMLInputElement>("#code")!.value.trim().toUpperCase();
       if (!code) {
@@ -141,8 +167,9 @@ export class Ui {
     room.onMessage(NOTICE, (msg: NoticeMsg) => this.toast(msg.level, msg.text));
     room.onError((code, message) => this.toast("error", `Serverfehler ${code}: ${message ?? ""}`));
     room.onLeave(() => {
-      this.scene?.resetVisuals();
-      this.showMenu("Verbindung zum Match beendet.");
+      // Nur wenn der Austritt NICHT von uns ausgelöst wurde (dann ist
+      // this.room bereits null und das Menü steht schon).
+      if (this.room === room) this.leaveToMenu("Verbindung zum Match beendet.");
     });
 
     room.onStateChange(() => this.render());
@@ -154,6 +181,41 @@ export class Ui {
 
     this.installHotkeys();
     this.render();
+  }
+
+  /**
+   * Verlässt den Raum und kehrt garantiert ins Hauptmenü zurück.
+   *
+   * Bewusst nicht davon abhängig, dass `room.onLeave` feuert: wenn die
+   * Verbindung hakt oder das Ereignis ausbleibt, blieb der Spieler vorher im
+   * Ergebnisbildschirm hängen und der Button wirkte kaputt. Jetzt wird das
+   * UI sofort umgeschaltet und das Trennen nur noch nebenher versucht.
+   */
+  private leaveToMenu(reason = "") {
+    const room = this.room;
+    // Zuerst lokal abkoppeln, damit späte Zustandsupdates das Menü nicht
+    // wieder überschreiben.
+    this.room = null;
+    this.state = null;
+    this.lastPhase = "";
+    this.lastWave = -1;
+    this.lastPerkOffer = "";
+    this.selectedTowerId = null;
+    this.selectedTowerDef = null;
+    this.laneEditMode = false;
+
+    this.side.classList.remove("active");
+    this.side.innerHTML = "";
+    this.scene?.setLaneEditMode(false);
+    this.scene?.resetVisuals();
+
+    clearReconnectToken();
+    try {
+      void room?.leave();
+    } catch {
+      // Verbindung war schon weg — für die Rückkehr ins Menü irrelevant.
+    }
+    this.showMenu(reason);
   }
 
   private send(type: string, payload?: unknown) {
@@ -173,7 +235,9 @@ export class Ui {
 
   private render() {
     const state = this.state;
-    if (!state) return;
+    // Nach dem Verlassen ist kein Zustand mehr gebunden — späte Updates
+    // dürfen das Hauptmenü nicht überschreiben.
+    if (!state || !this.room) return;
 
     if (state.phase !== this.lastPhase) {
       this.onPhaseChange(state.phase);
@@ -187,6 +251,12 @@ export class Ui {
 
   private onPhaseChange(phase: string) {
     this.root.innerHTML = "";
+    delete this.root.dataset.screen;
+    // Seitenleiste gehört nur zum laufenden Match.
+    if (phase !== "playing" && phase !== "preparing") {
+      this.side.classList.remove("active");
+      this.side.innerHTML = "";
+    }
     this.selectedTowerId = null;
     this.scene?.setSelectedTower(null);
     if (phase === "playing" || phase === "preparing") {
@@ -238,7 +308,8 @@ export class Ui {
         this.send(MSG.startMatch);
       });
       screen.querySelector("#leave")!.addEventListener("click", () => {
-        void this.room?.leave();
+        audio.play("ui-click");
+        this.leaveToMenu();
       });
     }
 
@@ -331,16 +402,29 @@ export class Ui {
 
     // ---- Wellenanzeige
     const wavebox = hud.querySelector<HTMLElement>(".wavebox")!;
+    const aheadNote = me.wavesAhead > 0 ? ` · ${me.wavesAhead} Welle(n) vorgezogen` : "";
     if (state.waveActive) {
-      wavebox.innerHTML = `<strong>Welle ${state.wave} läuft</strong> · ${state.enemiesRemaining} Gegner übrig`;
+      wavebox.innerHTML =
+        `<strong>Welle ${me.waveIndex} läuft</strong> · ${state.enemiesRemaining} Gegner übrig${aheadNote}`;
       wavebox.classList.add("warn");
     } else {
       const secs = Math.ceil(state.nextWaveInMs / 1000);
       wavebox.innerHTML =
-        `<strong>Welle ${state.wave + 1} in ${secs}s</strong>` +
+        `<strong>Welle ${state.wave + 1} in ${secs}s</strong>${aheadNote}` +
         `<div class="next">${escapeHtml(state.nextWavePreview || "—")}</div>`;
       wavebox.classList.remove("warn");
     }
+
+    // Rufknopf: zeigt den Bonus und sperrt bei erreichtem Vorsprung.
+    const callBtn = hud.querySelector<HTMLButtonElement>("#btn-call")!;
+    const atLimit = me.wavesAhead >= 3;
+    const noMoreWaves = state.maxWaves > 0 && me.waveIndex >= state.maxWaves;
+    callBtn.disabled = atLimit || noMoreWaves;
+    callBtn.textContent = noMoreWaves
+      ? "Letzte Welle erreicht"
+      : atLimit
+        ? "Maximal 3 Wellen voraus"
+        : `Welle ${me.waveIndex + 1} rufen (Leertaste)`;
 
     // ---- Turmliste
     this.renderTowerButtons(hud, me);
@@ -382,14 +466,9 @@ export class Ui {
         </div>
 
         <div class="wavebox"></div>
+        <button id="btn-call" class="callwave">Welle rufen (Leertaste)</button>
         <div class="toasts"></div>
 
-        <div class="sidebar">
-          <div class="section"><h4>Türme</h4><div class="towergrid" id="towers"></div></div>
-          <div class="section"><h4>Commander</h4><div class="abilitylist" id="abilities"></div></div>
-          <div class="section" id="sendsection"><h4>Angriff senden</h4><div class="sendlist" id="sends"></div></div>
-          <div class="section"><h4>Spieler</h4><div class="playerlist" id="players"></div></div>
-        </div>
 
         <div class="inspector" id="inspector"></div>
         <div class="editmode">
@@ -400,13 +479,25 @@ export class Ui {
         <div class="perkpick" id="perkpick"></div>
       </div>`);
 
+    // Seitenleiste in ihren eigenen Bereich rendern (nicht als Overlay).
+    this.side.classList.add("active");
+    this.side.innerHTML = `
+      <div class="sidebar">
+        <div class="section"><h4>Türme</h4><div class="towergrid" id="towers"></div></div>
+        <div class="section"><h4>Commander</h4><div class="abilitylist" id="abilities"></div></div>
+        <div class="section" id="sendsection"><h4>Angriff senden</h4><div class="sendlist" id="sends"></div></div>
+        <div class="section"><h4>Spieler</h4><div class="playerlist" id="players"></div></div>
+      </div>`;
+
+    hud.querySelector("#btn-call")!.addEventListener("click", () => this.callWave());
+
     hud.querySelector("#btn-edit")!.addEventListener("click", () => this.toggleLaneEdit());
     hud.querySelector("#editdone")!.addEventListener("click", () => this.toggleLaneEdit(false));
     hud.querySelector("#editreset")!.addEventListener("click", () => {
       audio.play("ui-click");
       this.send(MSG.resetLane);
     });
-    hud.querySelector("#btn-leave")!.addEventListener("click", () => void this.room?.leave());
+    hud.querySelector("#btn-leave")!.addEventListener("click", () => this.leaveToMenu());
     hud.querySelector("#btn-audio")!.addEventListener("click", (ev) => {
       audio.sfxEnabled = !audio.sfxEnabled;
       audio.setMusicEnabled(audio.sfxEnabled);
@@ -416,7 +507,7 @@ export class Ui {
   }
 
   private renderTowerButtons(hud: HTMLElement, me: PlayerState) {
-    const container = hud.querySelector<HTMLElement>("#towers")!;
+    const container = this.side.querySelector<HTMLElement>("#towers")!;
     const signature = `${Math.floor(me.gold)}:${this.selectedTowerDef}`;
     if (container.dataset.sig === signature) return;
     container.dataset.sig = signature;
@@ -443,7 +534,7 @@ export class Ui {
   }
 
   private renderAbilities(hud: HTMLElement, me: PlayerState, commander: (typeof COMMANDERS)[CommanderId]) {
-    const container = hud.querySelector<HTMLElement>("#abilities")!;
+    const container = this.side.querySelector<HTMLElement>("#abilities")!;
     const abilityReady = me.abilityCooldownMs <= 0;
     const ultReady = me.ultimateCooldownMs <= 0 && me.threat >= commander.ultimate.threatCost;
     const sig = `${abilityReady}:${ultReady}:${Math.ceil(me.abilityCooldownMs / 1000)}:${Math.ceil(me.ultimateCooldownMs / 1000)}`;
@@ -466,7 +557,7 @@ export class Ui {
   }
 
   private renderSends(hud: HTMLElement, me: PlayerState, state: MatchState) {
-    const section = hud.querySelector<HTMLElement>("#sendsection")!;
+    const section = this.side.querySelector<HTMLElement>("#sendsection")!;
     // Im Solo-Modus wird die Sektion ausgeblendet statt tot anzuzeigen.
     if (state.players.size < 2) {
       section.style.display = "none";
@@ -474,7 +565,7 @@ export class Ui {
     }
     section.style.display = "";
 
-    const container = hud.querySelector<HTMLElement>("#sends")!;
+    const container = this.side.querySelector<HTMLElement>("#sends")!;
     const sig = `${Math.floor(me.threat)}:${state.wave}:${me.sendCooldownMs > 0}:${me.sendTargetId}`;
     if (container.dataset.sig === sig) return;
     container.dataset.sig = sig;
@@ -499,7 +590,7 @@ export class Ui {
   }
 
   private renderPlayers(hud: HTMLElement, me: PlayerState, state: MatchState) {
-    const container = hud.querySelector<HTMLElement>("#players")!;
+    const container = this.side.querySelector<HTMLElement>("#players")!;
     const sig = [...state.players.values()]
       .map((p) => `${p.sessionId}:${Math.ceil(p.coreHp)}:${p.defeated}:${p.connected}`)
       .join("|") + me.sendTargetId;
@@ -650,7 +741,12 @@ export class Ui {
   // -------------------------------------------------------------- Ergebnis
 
   private renderResult() {
-    if (this.root.querySelector(".screen")) return;
+    // Eigener Stempel statt ".screen ist schon da": der alte Guard griff
+    // auch dann, wenn ein anderer Bildschirm (z. B. das Menü) im Weg war,
+    // und dann wurden die Buttons nie neu verdrahtet.
+    if (this.root.dataset.screen === "result") return;
+    this.root.dataset.screen = "result";
+    this.root.innerHTML = "";
     const state = this.state!;
     const me = this.me;
 
@@ -689,9 +785,16 @@ export class Ui {
 
     screen.querySelector("#again")!.addEventListener("click", () => {
       audio.play("ui-click");
+      if (!me?.isHost) {
+        this.toast("warn", "Nur der Host kann ein Rematch starten.");
+        return;
+      }
       this.send(MSG.rematch);
     });
-    screen.querySelector("#quit")!.addEventListener("click", () => void this.room?.leave());
+    screen.querySelector("#quit")!.addEventListener("click", () => {
+      audio.play("ui-click");
+      this.leaveToMenu();
+    });
   }
 
   // --------------------------------------------------------------- Eingabe
@@ -722,10 +825,16 @@ export class Ui {
   private useAbility(ultimate: boolean) {
     // Fähigkeiten mit Radius zielen auf die Mausposition, globale ignorieren sie.
     const pointer = this.scene?.input.activePointer;
-    const x = pointer ? pointer.worldX / 48 : 0;
-    const y = pointer ? pointer.worldY / 48 : 0;
+    const x = pointer ? pointer.worldX / TILE_SIZE : 0;
+    const y = pointer ? pointer.worldY / TILE_SIZE : 0;
     audio.play(ultimate ? "ultimate" : "ability");
     this.send(ultimate ? MSG.useUltimate : MSG.useAbility, { x, y });
+  }
+
+  /** Zieht die nächste Welle vor — auch während eine läuft. */
+  private callWave() {
+    audio.play("wave-start");
+    this.send(MSG.callWave);
   }
 
   private toggleLaneEdit(force?: boolean) {
@@ -763,6 +872,10 @@ export class Ui {
       } else if (ev.key.toLowerCase() === "q") this.useAbility(false);
       else if (ev.key.toLowerCase() === "w") this.useAbility(true);
       else if (ev.key.toLowerCase() === "e") this.toggleLaneEdit();
+      else if (ev.key === " " || ev.code === "Space") {
+        ev.preventDefault();
+        this.callWave();
+      }
       else if (ev.key === "Escape") {
         this.selectedTowerDef = null;
         this.laneEditMode = false;

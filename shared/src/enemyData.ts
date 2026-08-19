@@ -301,16 +301,51 @@ export function bossForWave(wave: number): EnemyDefinition {
   return ENEMIES[pool[index % pool.length]];
 }
 
-/** Wellenbudget: wächst spürbar, aber ohne Sprünge, die Comebacks unmöglich machen. */
+/**
+ * Wellenbudget: wie viele Gegner eine Welle enthält.
+ *
+ * Wächst spürbar, aber begrenzt — die eigentliche Eskalation kommt über HP
+ * und Rüstung (siehe unten), nicht über immer mehr Einheiten. Sonst würde die
+ * Simulation irgendwann an der Gegnerzahl ersticken statt an der Härte.
+ */
 export function waveBudget(wave: number, playerCount: number): number {
-  const base = 70 + wave * 42 + Math.pow(wave, 1.7) * 3.2;
+  const base = 90 + wave * 55 + Math.pow(wave, 1.75) * 4.5;
   // Mehr Spieler heißt nicht mehr Gegner pro Lane — jede Lane bleibt fair.
-  // Der Faktor gleicht nur leichte Skalierungseffekte aus.
   const scale = 1 + Math.max(0, playerCount - 1) * 0.04;
   return Math.round(base * scale);
 }
 
-/** HP-Skalierung über die Zeit, damit späte Wellen nicht trivial werden. */
+/**
+ * HP-Skalierung über die Wellen.
+ *
+ * Bewusst exponentiell: die Spielerstärke wächst multiplikativ (mehr Türme ×
+ * Upgrades × Spezialisierungen × Perks × Support-Auren) und erreicht im
+ * Lategame leicht das Fünfzigfache des Anfangswerts. Eine lineare
+ * Gegnerskalierung — wie sie hier vorher stand — bleibt dahinter
+ * zwangsläufig zurück, und ab etwa Welle 4 zerfallen die Wellen wirkungslos.
+ *
+ * Frühe Wellen bleiben mild, ab Welle 10 zieht die Kurve zusätzlich an.
+ */
 export function waveHpMultiplier(wave: number): number {
-  return 1 + Math.max(0, wave - 1) * 0.09;
+  const w = Math.max(1, wave);
+  const exponential = Math.pow(1.135, w - 1);
+  const lateGamePush = 1 + Math.max(0, w - 10) * 0.07;
+  return exponential * lateGamePush;
+}
+
+/**
+ * Zusätzliche Rüstung in späteren Wellen.
+ *
+ * Sorgt dafür, dass reine Schnellfeuer-Stapel nicht endlos skalieren und
+ * Rüstungsabbau (Minigun, Alchemist) sowie Energie-/Chemieschaden echte
+ * Bedeutung bekommen. Der Mindestschaden von 15 % verhindert dabei, dass
+ * Gegner unangreifbar werden.
+ */
+export function waveArmorBonus(wave: number): number {
+  return Math.max(0, Math.round((wave - 4) * 0.7));
+}
+
+/** Kill-Gold wächst mit, damit der Spieler mit der Eskalation Schritt halten kann. */
+export function waveGoldMultiplier(wave: number): number {
+  return 1 + Math.max(0, wave - 1) * 0.11;
 }

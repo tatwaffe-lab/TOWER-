@@ -1,5 +1,5 @@
 import { GridCoord, LaneGrid, TileKind } from "./gridTypes";
-import { createReferenceMap } from "./laneGrid";
+import { createReferenceMap, recomputeBuildableTiles } from "./laneGrid";
 import { findPath } from "./pathfinder";
 
 /**
@@ -192,23 +192,9 @@ export function recomputeBuildable(grid: LaneGrid): void {
       if (grid.tiles[y][x] === "buildable") grid.tiles[y][x] = "empty";
     }
   }
-  for (let y = 0; y < grid.config.height; y++) {
-    for (let x = 0; x < grid.config.width; x++) {
-      const tile = grid.tiles[y][x];
-      if (tile !== "lane" && tile !== "spawn" && tile !== "core") continue;
-      for (const [dx, dy] of [
-        [1, 0],
-        [-1, 0],
-        [0, 1],
-        [0, -1],
-      ]) {
-        const nx = x + dx;
-        const ny = y + dy;
-        if (nx < 0 || ny < 0 || nx >= grid.config.width || ny >= grid.config.height) continue;
-        if (grid.tiles[ny][nx] === "empty") grid.tiles[ny][nx] = "buildable";
-      }
-    }
-  }
+  // Dieselbe Regel wie beim Erzeugen der Referenzkarte (inkl. Diagonalen) —
+  // sonst hätten frisch gebaute und umgebaute Lanes unterschiedliche Bauzonen.
+  recomputeBuildableTiles(grid.tiles, grid.config);
 }
 
 /** Sichere Standardkarte — Rückfallebene für „Zurücksetzen“ im Editor. */

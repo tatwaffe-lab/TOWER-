@@ -27,7 +27,7 @@ function measureDps(towerId, level, specId, targetId, seconds = 20) {
       e.hp = 1e9;
       e.maxHp = 1e9;
       // Gegner in Reichweite platzieren.
-      e.x = 1 + Math.random() * 0.5;
+      e.x = 3 + Math.random() * 0.5;
       e.y = 1 + Math.random() * 0.5;
       e.pathIndex = 1;
     }
@@ -140,12 +140,13 @@ console.log("WELLENVERLAUF mit einer soliden Standardverteidigung");
 console.log("=".repeat(74));
 console.log("Welle".padStart(6), "Gegner".padStart(7), "Kills".padStart(6), "Leak-Schaden".padStart(13), "Gold".padStart(6), "Dauer s".padStart(8), "CPU ms".padStart(8));
 
+// Positionen auf der 20x12-Karte, verteilt entlang des Weges.
 const defense = [
-  ["gunner", 1, 2, 3, null],
+  ["gunner", 3, 0, 3, null],
   ["cannon", 5, 3, 3, null],
-  ["frost", 4, 5, 3, null],
-  ["sniper", 8, 6, 3, null],
-  ["tesla", 6, 5, 3, null],
+  ["frost", 8, 5, 3, null],
+  ["sniper", 6, 9, 3, null],
+  ["tesla", 12, 9, 3, null],
 ];
 
 let totalCpu = 0;
