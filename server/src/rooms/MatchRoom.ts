@@ -17,7 +17,7 @@ import {
   StatusView,
   THREAT_MAX,
   THREAT_PER_WAVE,
-  THREAT_REGEN_PER_SEC,
+  THREAT_PER_KILL,
   TOWERS,
   TARGETING_MODES,
   TowerState,
@@ -32,7 +32,10 @@ import {
   randomSeed,
   recomputeBuildable,
   resolveTowerStats,
-  sendAvailable,
+  sendCost,
+  sendUnlocked,
+  sendArmorBonus,
+  sendPowerMultiplier,
   serializeLaneMap,
   validate,
   validateEdit,
@@ -42,6 +45,10 @@ import {
   aiProfileFor,
   endlessExtraMultiplier,
   GameModeDefinition,
+  createMap,
+  isMapId,
+  mapDefinition,
+  DEFAULT_MAP_ID,
 } from "@td/shared";
 import { AiPlayer } from "../sim/AiPlayer";
 import { PlayerSim } from "../sim/PlayerSim";
@@ -53,11 +60,25 @@ const PREP_TIME_MS = 20000;
 const WAVE_GAP_MS = 12000;
 const RECONNECT_SECONDS = 60;
 /**
- * Wie viele Wellen ein Spieler dem globalen Zähler vorauseilen darf.
- * Begrenzt, damit weder die Simulation noch der Spieler von einem
- * versehentlichen Dauerklick überrollt wird.
+ * Wellen darf man beliebig viele vorbestellen. Was dabei nicht beliebig sein
+ * kann, ist die Zahl gleichzeitig *lebender* Gegner pro Lane — irgendwo hört
+ * die Rechenleistung auf, und im Gefecht würde das auch die Mitspieler
+ * ausbremsen.
+ *
+ * Deshalb wird nicht die Bestellung begrenzt, sondern der Ausstoß: die
+ * Warteschlange nimmt alles an, spuckt aber nur nach, solange unter dieser
+ * Grenze Platz ist. Der Spieler verliert dadurch nichts — die Gegner kommen
+ * trotzdem alle, nur eben nachrückend statt auf einen Schlag.
+ *
+ * Gemessen (`npm run balance`) kostet ein Tick mit 400 Gegnern 0,15 ms bei
+ * 100 ms Budget — die Simulation selbst ist also weit von der Kante entfernt.
+ * Die Grenze bremst deshalb nicht die Rechenzeit, sondern die Zustands-
+ * synchronisation: jeder lebende Gegner ist ein Eintrag, der 15-mal pro
+ * Sekunde zu jedem Client repliziert wird, und *das* wird bei vier Lanes
+ * teuer. 600 pro Lane ist bewusst großzügig gesetzt; im normalen Spiel
+ * begrenzt ohnehin die Spawnrate, nicht dieser Wert.
  */
-const MAX_WAVES_AHEAD = 3;
+const MAX_ALIVE_PER_LANE = 600;
 
 /** Ein wartender Spawn — trägt seine eigene Wellenskalierung mit sich. */
 interface QueuedSpawn {
@@ -101,7 +122,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
   private mode: GameModeDefinition = gameMode("campaign");
 
-  onCreate(options: { mode?: string; roomCode?: string } = {}) {
+  onCreate(options: { mode?: string; roomCode?: string; mapId?: string } = {}) {
     this.setState(new MatchState());
     this.state.seed = randomSeed();
     const mode = gameMode(options.mode ?? "campaign");
@@ -110,6 +131,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.state.maxWaves = mode.maxWaves;
     this.state.sendsEnabled = mode.sendsEnabled;
     this.maxClients = mode.maxHumans;
+    this.state.mapId =
+      options.mapId && isMapId(options.mapId) ? options.mapId : DEFAULT_MAP_ID;
     this.state.roomCode = (options.roomCode ?? this.generateRoomCode()).toUpperCase().slice(0, 6);
     this.rng = new Rng(this.state.seed);
     this.setPatchRate(1000 / PATCH_HZ);
@@ -235,6 +258,23 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     this.onMessage(MSG.callWave, (client) => this.handleCallWave(client));
 
+    this.onMessage(MSG.setMap, (client, payload) => {
+      const msg = validate.map(payload);
+      const player = this.state.players.get(client.sessionId);
+      // Nur der Host, nur in der Lobby, nur existierende Karten. Alles
+      // andere wird verworfen, nicht korrigiert.
+      if (!msg || !player?.isHost || this.state.phase !== "lobby") return;
+      if (!isMapId(msg.mapId)) return;
+      if (msg.mapId === this.state.mapId) return;
+      this.state.mapId = msg.mapId;
+      this.applyMapToAll();
+      this.setMetadata({
+        roomCode: this.state.roomCode,
+        mode: this.state.mode,
+        mapId: this.state.mapId,
+      });
+    });
+
     this.onMessage(MSG.rematch, (client) => {
       const player = this.state.players.get(client.sessionId);
       if (!player || this.state.phase !== "result") return;
@@ -257,7 +297,13 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     player.isHost = this.state.players.size === 0;
     this.state.players.set(client.sessionId, player);
 
-    const sim = new PlayerSim(new Rng(this.state.seed + this.state.players.size * 7919));
+    const sim = new PlayerSim(
+      new Rng(this.state.seed + this.state.players.size * 7919),
+      this.freshGrid()
+    );
+    // IDs müssen über alle Lanes hinweg eindeutig sein — sonst überschreiben
+    // sich Gegner verschiedener Spieler im gemeinsamen Zustand.
+    sim.idPrefix = client.sessionId;
     this.runtimes.set(client.sessionId, {
       sim,
       spawnQueue: [],
@@ -340,6 +386,32 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   }
 
   /** Sorgt dafür, dass jeder ein gültiges Send-Ziel hat. */
+  /** Ein frisches Gitter der aktuell gewählten Karte. */
+  private freshGrid() {
+    return createMap(this.state.mapId);
+  }
+
+  /**
+   * Setzt die gewählte Karte für alle Teilnehmer.
+   *
+   * Alle spielen dieselbe Karte — sonst könnte sich im Gefecht jemand die
+   * leichteste aussuchen und hätte mehr Gold für Angriffe übrig, ohne dafür
+   * etwas zu leisten.
+   */
+  private applyMapToAll() {
+    for (const [sessionId, rt] of this.runtimes) {
+      rt.sim.clear();
+      rt.sim.grid = this.freshGrid();
+      rt.sim.rebuildPath();
+      const player = this.state.players.get(sessionId);
+      if (player) player.laneMapJson = JSON.stringify(serializeLaneMap(rt.sim.grid));
+    }
+    // Türme stünden sonst auf Feldern, die es auf der neuen Karte nicht gibt.
+    this.state.towers.clear();
+    this.state.enemies.clear();
+    this.state.effects.clear();
+  }
+
   private refreshSendTargets() {
     for (const player of this.state.players.values()) {
       const target = player.sendTargetId ? this.state.players.get(player.sendTargetId) : undefined;
@@ -409,6 +481,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       player.survivedWaves = 0;
       player.waveIndex = 0;
       player.wavesAhead = 0;
+      player.queuedEnemies = 0;
       player.placement = 0;
       player.commanderXp = 0;
       player.commanderLevel = 1;
@@ -443,7 +516,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       player.commanderId = i % 2 === 0 ? "warlord" : "engineer";
       this.state.players.set(id, player);
 
-      const sim = new PlayerSim(new Rng(this.state.seed + 4801 * (i + 1)));
+      const sim = new PlayerSim(new Rng(this.state.seed + 4801 * (i + 1)), this.freshGrid());
+      sim.idPrefix = id;
       sim.commanderId = player.commanderId as CommanderId;
       this.runtimes.set(id, {
         sim,
@@ -550,10 +624,6 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (!player || !rt || player.defeated) return;
     if (this.state.phase !== "playing" && this.state.phase !== "preparing") return;
 
-    if (player.wavesAhead >= MAX_WAVES_AHEAD) {
-      this.notify(client, "warn", `Höchstens ${MAX_WAVES_AHEAD} Wellen im Voraus.`);
-      return;
-    }
     if (this.state.maxWaves > 0 && player.waveIndex >= this.state.maxWaves) {
       this.notify(client, "warn", "Es gibt keine weitere Welle mehr.");
       return;
@@ -561,10 +631,21 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     const nextWave = player.waveIndex + 1;
 
-    // Bonus: Grundprämie plus Anteil der übersprungenen Wartezeit.
+    /**
+     * Bonus: Grundprämie plus Anteil der übersprungenen Wartezeit.
+     *
+     * Der Bonus klingt mit dem Vorsprung ab. Ohne das wäre Dauerklicken ein
+     * Goldautomat: 20 Wellen rufen brächte 20 volle Prämien, und das Gold
+     * käme sofort, während die Gegner noch in der Warteschlange stehen. Mit
+     * der Dämpfung bleibt der erste Ruf lohnend und der zwanzigste ist fast
+     * nur noch Risiko — genau die Kurve, die die Entscheidung interessant
+     * hält.
+     */
+    const ahead = Math.max(0, player.waveIndex - this.state.wave);
+    const daempfung = 1 / (1 + ahead * 0.6);
     const skipped = Math.max(0, this.waveTimerMs);
     const timeBonus = Math.round((skipped / 1000) * 4);
-    const bonus = 30 + nextWave * 6 + timeBonus;
+    const bonus = Math.max(5, Math.round((30 + nextWave * 6 + timeBonus) * daempfung));
 
     this.releaseWaveTo(client.sessionId, nextWave);
     this.grantGold(player, bonus);
@@ -858,7 +939,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     const rt = this.runtimes.get(client.sessionId);
     if (!player || !rt || !this.state.laneEditingOpen) return;
 
-    const fresh = new PlayerSim(new Rng(this.state.seed)).grid;
+    const fresh = this.freshGrid();
     recomputeBuildable(fresh);
     for (const [id, tower] of [...rt.sim.towers]) {
       if (fresh.tiles[tower.y]?.[tower.x] !== "buildable") {
@@ -889,12 +970,14 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       this.notify(client, "warn", "Fähigkeit lädt noch.");
       return;
     }
+    // Threat wird auch hier nur *verlangt*, nicht ausgegeben. Sonst würde
+    // eine Ultimate den Freischaltstand für Angriffe wieder senken — der
+    // Spieler verlöre Optionen, die er sich erspielt hat.
     if (player.threat < ability.threatCost) {
-      this.notify(client, "warn", `Nicht genug Threat (${ability.threatCost} nötig).`);
+      this.notify(client, "warn", `Braucht ${ability.threatCost} Bedrohung.`);
       return;
     }
 
-    player.threat -= ability.threatCost;
     const mods = rt.sim.modifiers();
     player[cdField] = Math.round(ability.cooldownMs * mods.abilityCooldownMul);
 
@@ -946,12 +1029,14 @@ export class MatchRoom extends Room<{ state: MatchState }> {
           break;
         }
         const def = SEND_UNITS["rusher"];
+        const stufe = Math.max(1, player.waveIndex, this.state.wave);
         for (let i = 0; i < 8; i++) {
           targetRt.sim.spawnEnemy(def.spawns, {
-            hpMul: def.hpMul * 1.4,
+            hpMul: def.hpMul * 1.4 * sendPowerMultiplier(stufe),
             speedMul: def.speedMul,
+            armorAdd: sendArmorBonus(def, stufe),
             sent: true,
-            bountyGold: defenderReward(def),
+            bountyGold: defenderReward(def, stufe),
           });
         }
         player.sendsLaunched += 8;
@@ -1007,12 +1092,9 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       notify?.("warn", "Sends brauchen mindestens zwei Teilnehmer.");
       return;
     }
-    if (!sendAvailable(def, this.state.wave)) {
-      notify?.("warn", `${def.name} ist erst ab Welle ${def.minWave} verfügbar.`);
-      return;
-    }
-    if (player.sendCooldownMs > 0) {
-      notify?.("warn", "Send lädt noch.");
+    // Threat wird nicht ausgegeben, sondern schaltet frei.
+    if (!sendUnlocked(def, player.threat)) {
+      notify?.("warn", `${def.name} braucht ${def.threatUnlock} Bedrohung.`);
       return;
     }
 
@@ -1029,26 +1111,37 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       return;
     }
 
+    /**
+     * Gold ist die Kosten. Die Wellenstufe des *Absenders* bestimmt Preis und
+     * Stärke — wer weit vorne ist, schickt teurere und härtere Einheiten.
+     * Bewusst nicht die Stufe des Ziels: sonst könnte man sich durch eigenes
+     * Zurückbleiben billige Angriffe erschleichen.
+     */
+    const stufe = Math.max(1, player.waveIndex, this.state.wave);
     const mods = rt.sim.modifiers();
-    const cost = Math.max(1, Math.round(def.cost * mods.sendCostMul * rt.sim.activeSendCostMul()));
-    if (player.threat < cost) {
-      notify?.("warn", `Nicht genug Threat (${cost} nötig).`);
+    const cost = Math.max(
+      1,
+      Math.round(sendCost(def, stufe) * mods.sendCostMul * rt.sim.activeSendCostMul())
+    );
+    if (player.gold < cost) {
+      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
       return;
     }
 
-    player.threat -= cost;
-    player.sendCooldownMs = def.cooldownMs;
+    player.gold -= cost;
     player.sendsLaunched += def.count;
     player.sendTargetId = chosen;
 
-    const hpMul = def.hpMul * mods.sendHpMul * rt.sim.activeSendHpMul();
+    const hpMul =
+      def.hpMul * sendPowerMultiplier(stufe) * mods.sendHpMul * rt.sim.activeSendHpMul();
     const speedMul = def.speedMul * mods.sendSpeedMul * rt.sim.activeSendSpeedMul();
+    const armorAdd = sendArmorBonus(def, stufe);
     // Der Verteidiger verdient an abgewehrten Sends — gescheiterte Angriffe
     // finanzieren also den Gegner (Master Prompt §11).
-    const bounty = defenderReward(def);
+    const bounty = defenderReward(def, stufe);
 
     for (let i = 0; i < def.count; i++) {
-      targetRt.sim.spawnEnemy(def.spawns, { hpMul, speedMul, sent: true, bountyGold: bounty });
+      targetRt.sim.spawnEnemy(def.spawns, { hpMul, speedMul, armorAdd, sent: true, bountyGold: bounty });
     }
 
     notify?.("info", `${def.name} an ${targetPlayer.name} geschickt.`);
@@ -1090,32 +1183,53 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       // aber Sonderfälle beim Rematch).
       player.abilityCooldownMs = Math.max(0, player.abilityCooldownMs - dt);
       player.ultimateCooldownMs = Math.max(0, player.ultimateCooldownMs - dt);
-      player.sendCooldownMs = Math.max(0, player.sendCooldownMs - dt);
 
       if (player.defeated) continue;
 
       // KI-Teilnehmer treffen ihre Entscheidungen im selben Tick.
       if (rt.ai) this.tickAi(sessionId, rt, dt);
 
-      // Threat-Regeneration
-      const mods = rt.sim.modifiers();
-      player.threat = Math.min(
-        THREAT_MAX,
-        player.threat + (THREAT_REGEN_PER_SEC * mods.threatRegenMul * dt) / 1000
-      );
-
-      // Spawns der laufenden Welle
+      // Spawns der laufenden Welle.
+      //
+      // Die Warteschlange kann beliebig lang sein (Wellen sind unbegrenzt
+      // vorbestellbar). Damit die Lane nicht in einem Tick mit tausend
+      // Gegnern geflutet wird, wird pro Tick nur nachgespuckt, solange unter
+      // MAX_ALIVE_PER_LANE Platz ist. Nichts geht verloren — es rückt nach.
       if (rt.spawnQueue.length > 0) {
+        /**
+         * Mehrere gerufene Wellen müssen sich auch mehrfach anfühlen.
+         *
+         * Bis hierher liefen gestapelte Wellen durch dieselbe Warteschlange
+         * mit demselben Intervall — fünf Wellen zu rufen streckte den
+         * Nachschub also nur in die Länge, statt den Druck zu erhöhen. Das
+         * ist genau das Gegenteil von dem, wofür man vorzieht.
+         *
+         * Deshalb spuckt jede wartende Welle ihren eigenen Strom aus: das
+         * Intervall wird durch die Zahl der Wellen in der Warteschlange
+         * geteilt. Fünf Wellen heißt fünffache Spawnrate, und es rollt
+         * wirklich alles gleichzeitig heran.
+         */
+        const wellenInQueue = new Set(rt.spawnQueue.map((q) => q.wave)).size;
+        const intervall = Math.max(40, rt.spawnIntervalMs / Math.max(1, wellenInQueue));
+
         rt.spawnTimerMs -= dt;
-        while (rt.spawnTimerMs <= 0 && rt.spawnQueue.length > 0) {
+        while (
+          rt.spawnTimerMs <= 0 &&
+          rt.spawnQueue.length > 0 &&
+          rt.sim.enemies.size < MAX_ALIVE_PER_LANE
+        ) {
           const next = rt.spawnQueue.shift()!;
           // Jeder Eintrag bringt seine eigene Skalierung mit — wichtig, wenn
           // mehrere Wellen gleichzeitig laufen.
           rt.sim.currentWave = next.wave;
           rt.sim.spawnEnemy(next.defId, { hpMul: next.hpMul });
-          rt.spawnTimerMs += rt.spawnIntervalMs;
+          rt.spawnTimerMs += intervall;
         }
+        // Bei erreichter Grenze den Timer nicht ins Minus laufen lassen,
+        // sonst käme beim Freiwerden alles auf einen Schlag nach.
+        if (rt.spawnTimerMs < 0) rt.spawnTimerMs = 0;
       }
+      player.queuedEnemies = rt.spawnQueue.length;
 
       rt.sim.tickBuffs(dt);
       rt.sim.applyFieldSlows(dt);
@@ -1132,6 +1246,10 @@ export class MatchRoom extends Room<{ state: MatchState }> {
         this.grantGold(player, kill.wasSent ? kill.gold : kill.gold * goldScale);
         this.grantXp(player, kill.xp);
         player.kills += 1;
+        // Threat wird nie ausgegeben — es ist der Freischaltfortschritt.
+        // Kills zählen mit, damit gutes Verteidigen die stärkeren Angriffe
+        // schneller öffnet als blosses Abwarten.
+        player.threat = Math.min(THREAT_MAX, player.threat + THREAT_PER_KILL);
       }
 
       for (const leak of leaks) {
@@ -1246,7 +1364,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     // Frische Simulation pro Spieler — kein alter Matchzustand bleibt hängen.
     for (const [sessionId, rt] of this.runtimes) {
       rt.sim.clear();
-      rt.sim = new PlayerSim(new Rng(this.state.seed + sessionId.length * 7919));
+      rt.sim = new PlayerSim(new Rng(this.state.seed + sessionId.length * 7919), this.freshGrid());
+      rt.sim.idPrefix = sessionId;
       rt.spawnQueue = [];
       rt.spawnTimerMs = 0;
       rt.waveHpMul = 1;
@@ -1265,12 +1384,12 @@ export class MatchRoom extends Room<{ state: MatchState }> {
         player.survivedWaves = 0;
         player.waveIndex = 0;
         player.wavesAhead = 0;
+        player.queuedEnemies = 0;
         player.commanderXp = 0;
         player.commanderLevel = 1;
         player.threat = 0;
         player.abilityCooldownMs = 0;
         player.ultimateCooldownMs = 0;
-        player.sendCooldownMs = 0;
         player.perks.clear();
         player.perkOffer.clear();
         player.laneMapJson = JSON.stringify(serializeLaneMap(rt.sim.grid));

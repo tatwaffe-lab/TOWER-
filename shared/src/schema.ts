@@ -42,7 +42,6 @@ export class PlayerState extends Schema {
 
   /** Wen dieser Spieler mit Sends angreift. */
   @type("string") sendTargetId: string = "";
-  @type("number") sendCooldownMs: number = 0;
 
   /**
    * Wie viele Wellen dieser Spieler bereits bekommen hat. Kann über
@@ -53,6 +52,8 @@ export class PlayerState extends Schema {
   @type("number") waveIndex: number = 0;
   /** Wie viele Wellen dieser Spieler dem globalen Zähler voraus ist. */
   @type("number") wavesAhead: number = 0;
+  /** Noch nicht ausgespuckte Gegner in der eigenen Warteschlange. */
+  @type("number") queuedEnemies: number = 0;
 
   /** Statistik für den Ergebnisbildschirm. */
   @type("number") kills: number = 0;
@@ -129,6 +130,8 @@ export class MatchState extends Schema {
   /** 0 = unbegrenzt (Endlosmodus). */
   @type("number") maxWaves: number = 30;
   @type("boolean") sendsEnabled: boolean = false;
+  /** Gewählte Karte. Gilt für alle Teilnehmer, damit das Gefecht fair bleibt. */
+  @type("string") mapId: string = "maeander";
   @type("number") seed: number = 0;
   @type("string") roomCode: string = "";
   @type("string") winnerId: string = "";

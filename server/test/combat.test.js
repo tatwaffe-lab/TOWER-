@@ -23,6 +23,22 @@ const {
   COMMANDERS,
   levelForXp,
   defenderReward,
+  sendCost,
+  sendUnlocked,
+  sendPowerMultiplier,
+  sendArmorBonus,
+  THREAT_TIERS,
+  THREAT_MAX,
+  waveGoldMultiplier,
+  waveHpMultiplier,
+  MAPS,
+  DEFAULT_MAP_ID,
+  isMapId,
+  createMap,
+  expandPath,
+  findPath,
+  mapPathLength,
+  mapBuildableCount,
   SEND_UNITS,
 } = require("../../shared/dist/index.js");
 
@@ -233,14 +249,90 @@ test("Commander-Level: XP-Schwellen steigen monoton", () => {
 });
 
 test("Sends: Verteidiger bekommt anteilige Belohnung, Spam lohnt nicht", () => {
-  for (const def of Object.values(SEND_UNITS)) {
-    const reward = defenderReward(def);
-    assert.ok(reward >= 1, `${def.id}: Verteidiger bekommt etwas`);
-    const totalBack = reward * def.count;
-    assert.ok(totalBack < def.cost * 1.1, `${def.id}: Rückfluss übersteigt Kosten nicht`);
+  for (const wave of [1, 5, 20]) {
+    for (const def of Object.values(SEND_UNITS)) {
+      const reward = defenderReward(def, wave);
+      assert.ok(reward >= 1, `${def.id}: Verteidiger bekommt etwas`);
+      const totalBack = reward * def.count;
+      assert.ok(
+        totalBack < sendCost(def, wave) * 1.1,
+        `${def.id} (W${wave}): Rückfluss übersteigt Kosten nicht`
+      );
+    }
   }
   // Billiger Spam gibt anteilig mehr zurück als ein teurer Einzelangriff.
   const rusher = SEND_UNITS.rusher;
   const beast = SEND_UNITS["siege-beast"];
   assert.ok(rusher.defenderRewardRatio > beast.defenderRewardRatio);
+});
+
+test("Sends: Gold ist die Kosten, Threat nur die Freischaltung", () => {
+  for (const def of Object.values(SEND_UNITS)) {
+    assert.ok(def.goldCost > 0, `${def.id}: hat Goldkosten`);
+    assert.strictEqual(def.cost, undefined, `${def.id}: keine Threat-Kosten mehr`);
+    assert.strictEqual(def.cooldownMs, undefined, `${def.id}: kein Cooldown mehr`);
+    assert.ok(def.threatUnlock >= 0, `${def.id}: Freischaltschwelle gesetzt`);
+  }
+
+  // Freischaltung hängt am Threat-Stand, nicht an der Welle.
+  const beast = SEND_UNITS["siege-beast"];
+  assert.ok(!sendUnlocked(beast, beast.threatUnlock - 1), "unter der Schwelle gesperrt");
+  assert.ok(sendUnlocked(beast, beast.threatUnlock), "ab der Schwelle offen");
+  assert.ok(sendUnlocked(SEND_UNITS.rusher, 0), "Einstiegsstufe von Anfang an offen");
+
+  // Es gibt mehr als eine Stufe, sonst wäre die Leiste sinnlos.
+  assert.ok(THREAT_TIERS.length >= 3, `mehrere Freischaltstufen (${THREAT_TIERS.length})`);
+  assert.ok(Math.max(...THREAT_TIERS) <= THREAT_MAX, "höchste Stufe ist erreichbar");
+});
+
+test("Sends: Kosten und Stärke wachsen mit der Wellenstufe, Kosten langsamer", () => {
+  const def = SEND_UNITS.rusher;
+  assert.ok(sendCost(def, 10) > sendCost(def, 1), "teurer in Welle 10");
+  assert.ok(sendPowerMultiplier(10) > sendPowerMultiplier(1), "stärker in Welle 10");
+  assert.ok(sendArmorBonus(def, 20) > sendArmorBonus(def, 1), "mehr Rüstung in Welle 20");
+
+  // Der entscheidende Punkt: Angriffe dürfen nicht schneller teurer werden
+  // als das Einkommen wächst, sonst sterben sie im späten Spiel aus.
+  const kostenFaktor = sendCost(def, 20) / sendCost(def, 1);
+  const einkommenFaktor = waveGoldMultiplier(20) / waveGoldMultiplier(1);
+  assert.ok(
+    kostenFaktor < einkommenFaktor,
+    `Kosten (x${kostenFaktor.toFixed(2)}) wachsen langsamer als Einkommen (x${einkommenFaktor.toFixed(2)})`
+  );
+
+  // Und sie dürfen die PvE-Welle nicht überholen, sonst entscheidet ein
+  // einzelner Send das Spiel.
+  assert.ok(
+    sendPowerMultiplier(20) < waveHpMultiplier(20),
+    "Sends bleiben unter der PvE-Kurve"
+  );
+});
+
+test("Karten: alle 8 sind spielbar und die BFS läuft den gezeichneten Weg", () => {
+  assert.strictEqual(MAPS.length, 8, "acht Karten");
+  assert.ok(isMapId(DEFAULT_MAP_ID), "Standardkarte existiert");
+  assert.ok(!isMapId("<script>"), "unbekannte ID wird abgelehnt");
+
+  for (const def of MAPS) {
+    const grid = createMap(def.id);
+    const gezeichnet = expandPath(def);
+    const gelaufen = findPath(grid, grid.spawn, grid.core);
+
+    assert.ok(gelaufen, `${def.id}: Core erreichbar`);
+    // Der wichtigste Test: kürzt die BFS ab, wird die halbe Karte nie betreten.
+    assert.strictEqual(
+      gelaufen.length,
+      gezeichnet.length,
+      `${def.id}: BFS läuft ${gelaufen.length}, gezeichnet sind ${gezeichnet.length} Felder`
+    );
+    assert.ok(mapBuildableCount(def.id) >= 25, `${def.id}: genug Bauplätze`);
+  }
+
+  // Die Stufen müssen sich in den Weglängen wiederfinden.
+  const mittel = (stufe) => {
+    const g = MAPS.filter((m) => m.difficulty === stufe);
+    return g.reduce((s, m) => s + mapPathLength(m.id), 0) / g.length;
+  };
+  assert.ok(mittel("leicht") > mittel("mittel"), "leichte Karten geben mehr Beschusszeit");
+  assert.ok(mittel("mittel") > mittel("schwer"), "mittlere mehr als schwere");
 });

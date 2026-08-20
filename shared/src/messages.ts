@@ -27,6 +27,7 @@ export const MSG = {
   sendUnits: "send_units",
   setSendTarget: "set_send_target",
   callWave: "call_wave",
+  setMap: "set_map",
   rematch: "rematch",
 } as const;
 
@@ -67,6 +68,9 @@ export interface NameMsg {
 }
 export interface CommanderMsg {
   commanderId: string;
+}
+export interface MapMsg {
+  mapId: string;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -143,6 +147,13 @@ export const validate = {
   perk(payload: unknown): PerkMsg | null {
     if (!isObject(payload) || !isId(payload.perkId)) return null;
     return { perkId: payload.perkId };
+  },
+
+  map(payload: unknown): MapMsg | null {
+    // Nur Form und Zeichensatz. Ob die ID existiert, entscheidet der Server
+    // gegen MAPS — die Nachrichtenschicht kennt den Kartenbestand nicht.
+    if (!isObject(payload) || !isId(payload.mapId)) return null;
+    return { mapId: payload.mapId };
   },
 
   sendUnits(payload: unknown): SendUnitsMsg | null {

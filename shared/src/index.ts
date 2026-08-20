@@ -87,7 +87,34 @@ export {
 } from "./commanderData";
 
 export type { SendUnitDefinition } from "./sendData";
-export { SEND_UNITS, SEND_IDS, THREAT_MAX, THREAT_REGEN_PER_SEC, THREAT_PER_WAVE, defenderReward, sendAvailable } from "./sendData";
+export {
+  SEND_UNITS,
+  SEND_IDS,
+  THREAT_MAX,
+  THREAT_PER_WAVE,
+  THREAT_PER_KILL,
+  THREAT_TIERS,
+  sendCost,
+  sendPowerMultiplier,
+  sendArmorBonus,
+  sendUnlocked,
+  defenderReward,
+} from "./sendData";
+
+export type { MapDifficulty, MapDefinition } from "./maps";
+export {
+  MAPS,
+  MAP_IDS,
+  MAP_DIFFICULTY_ORDER,
+  DEFAULT_MAP_ID,
+  mapDefinition,
+  isMapId,
+  expandPath,
+  createMap,
+  mapPathLength,
+  mapBuildableCount,
+  mapsByDifficulty,
+} from "./maps";
 
 export { createReferenceMap, tileAt, recomputeBuildableTiles, GRID_WIDTH, GRID_HEIGHT, GRID_TILE_SIZE } from "./laneGrid";
 export { findPath, isMapValid } from "./pathfinder";

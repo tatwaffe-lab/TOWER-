@@ -10,7 +10,7 @@ const { Server } = require("colyseus");
 const { WebSocketTransport } = require("@colyseus/ws-transport");
 const http = require("http");
 const { MatchRoom } = require("../dist/rooms/MatchRoom");
-const { MSG } = require("../../shared/dist/index.js");
+const { MSG, SEND_UNITS, sendCost } = require("../../shared/dist/index.js");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function assert(cond, msg) {
@@ -90,7 +90,12 @@ async function main() {
       const me = room.state.players.get(client.sessionId);
       assert(me.sendTargetId === ais[0].sessionId, "KI ist automatisch das Sendeziel");
 
-      await waitFor(() => me.threat >= 8, 20000, "Threat regeneriert");
+      // Sends kosten Gold und gehen erst in der Kampfphase — die
+      // Vorbereitungsphase lehnt sie ab. Beides hier explizit abwarten,
+      // statt uns auf eine zufällig passende Wartezeit zu verlassen.
+      await waitFor(() => room.state.phase === "playing", 30000, "Kampfphase beginnt");
+      const kosten = sendCost(SEND_UNITS.rusher, Math.max(1, room.state.wave));
+      await waitFor(() => me.gold >= kosten, 60000, `genug Gold für den Send (${kosten})`);
       client.send(MSG.sendUnits, { sendId: "rusher", targetId: ais[0].sessionId });
       await waitFor(
         () => [...room.state.enemies.values()].some((e) => e.ownerId === ais[0].sessionId && e.sent),

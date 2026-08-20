@@ -14,7 +14,8 @@ npm run dev:server    # Terminal 1 — Match-Server auf :2567
 npm run dev:client    # Terminal 2 — Client auf :5173
 ```
 
-Browser auf `http://localhost:5173` öffnen und einen der drei Modi wählen.
+Browser auf `http://localhost:5173` öffnen, einen der drei Modi und eine der
+acht Karten wählen.
 
 Im Produktionsbuild liefert der Server den Client gleich mit aus — dann
 genügt `npm start` und `http://localhost:2567`.
@@ -34,6 +35,41 @@ einfachen Heuristiken (Bauplätze nach Wegabdeckung, gleichmäßiges Aufwerten,
 Angriff je nach Aggressionsprofil). Drei Stufen von „Rostkommando" bis
 „Leerenkult".
 
+## Karten
+
+Acht Stück, vom Host in der Lobby gewählt. Im Gefecht spielen alle dieselbe,
+sonst könnte sich jemand die leichteste nehmen und hätte mehr Gold für
+Angriffe übrig.
+
+| Karte | Stufe | Weg | Bauplätze |
+|---|---|---|---|
+| Weite Ebene | leicht | 51 | 105 |
+| Doppelschleife | leicht | 53 | 78 |
+| Zickzack | mittel | 47 | 97 |
+| Kesselgang | mittel | 42 | 87 |
+| Mäander | mittel | 43 | 83 |
+| Randlauf | schwer | 53 | 55 |
+| Enge Gasse | schwer | 24 | 51 |
+| Blitzschneise | schwer | 21 | 45 |
+
+**Was die Schwierigkeit ausmacht:** der Bauplatz, nicht die Weglänge. Das war
+eine Korrektur nach der Messung — der erste Entwurf ging von "langer Weg =
+mehr Beschusszeit" aus, aber Türme gleichmäßig am Weg verteilt geben jedem
+Gegner ungefähr dieselbe Feuerberührung, egal wie lang der Weg ist.
+Entscheidend ist, wie viele Türme überhaupt Platz finden. `Randlauf` ist
+deshalb schwer, obwohl der Weg zu den längsten gehört: er klebt an der
+Außenwand, und die halbe Reichweite jedes Turms verpufft ins Nichts.
+
+Beides wird gemessen, nicht behauptet:
+
+- `npm run maps` läuft die BFS über jede Karte und vergleicht sie mit dem
+  gezeichneten Weg. Liegen zwei Gänge zu dicht nebeneinander, kürzt die BFS ab
+  und die halbe Karte wird nie betreten — per Augenmaß sieht man das nicht.
+- `npm run balance` spielt auf jeder Karte mit gleichem Goldbudget die Wellen
+  10, 15 und 20 durch. Die Leak-Summen ergeben sauber leicht → mittel → schwer.
+- `npm run test:maps` startet auf allen acht Karten ein echtes Match und
+  prüft, dass Gegner tatsächlich bis zum Core laufen.
+
 ## Steuerung
 
 | Eingabe | Wirkung |
@@ -44,13 +80,23 @@ Angriff je nach Aggressionsprofil). Drei Stufen von „Rostkommando" bis
 | `Q` / `W` | Commander-Fähigkeit / Ultimate (zielen mit der Maus) |
 | `E` | Lane-Editor ein/aus (nur zwischen den Wellen) |
 | Klick / Shift+Klick im Editor | Weg hinzufügen / entfernen |
-| `Leertaste` | nächste Welle vorziehen (auch während eine läuft) |
+| `Leertaste` | nächste Welle vorziehen (beliebig oft, auch während eine läuft) |
 | `Esc` | Auswahl aufheben |
 
-**Wellen vorziehen:** Du musst nicht auf den Countdown warten. Ein Ruf
-schickt die nächste Welle sofort los — auch mitten in der laufenden, sodass
-sich beide überlagern. Belohnt wird das mit Bonusgold, das mit der
-übersprungenen Wartezeit steigt. Maximal drei Wellen Vorsprung.
+**Wellen vorziehen:** Du musst nicht auf den Countdown warten, und es gibt
+keine Obergrenze. Jeder Ruf schickt die nächste Welle sofort los — auch mitten
+in der laufenden, sodass sich alles überlagert.
+
+Dabei steigt nicht nur die Menge, sondern das Tempo: jede wartende Welle spuckt
+ihren eigenen Strom aus. Fünfzehn Wellen Vorsprung heißen gemessen 21 Gegner
+pro Sekunde statt der üblichen zwei. Ohne das würde Vorziehen den Nachschub nur
+in die Länge ziehen, statt den Druck zu erhöhen — das Gegenteil von dem, wofür
+man vorzieht.
+
+Bonusgold gibt es für jeden Ruf, aber es **klingt mit dem Vorsprung ab** (erster
+Ruf +116, weit vorne +21). Sonst wäre Dauerklicken ein Goldautomat: das Gold
+käme sofort, während die Gegner noch in der Warteschlange stehen. Das Risiko
+klingt nicht ab.
 
 Im Gefecht gilt der Ruf **nur für dich**: du kannst dein eigenes Tempo
 hochdrehen, ohne den Mitspielern Wellen aufzuzwingen. Wer schneller ruft,
@@ -89,6 +135,13 @@ werden.
 - PvP-Sends: 8 Einheiten, die beim Ziel echte Gegner erzeugen. Abgewehrte
   Sends zahlen dem Verteidiger Gold — ein gescheiterter Angriff finanziert
   den Gegner.
+- **Gold bezahlt, Bedrohung schaltet frei.** Angriffe kosten dasselbe Gold wie
+  Türme; jeder Send ist ein Turm, den du nicht gebaut hast. Das ist die
+  eigentliche Entscheidung und braucht keinen Cooldown — es gibt keinen.
+  Bedrohung wird nie ausgegeben, sondern wächst über Wellen und Kills und
+  bestimmt nur, welche Stufen anklickbar sind (0 / 60 / 150 / 300).
+- Gesendete Einheiten skalieren mit der Wellenstufe des Absenders. Ohne das
+  wären sie ab Welle 15 nur noch Gratisgold für den Verteidiger.
 - Reconnect innerhalb von 60 s, Rematch mit vollständigem Reset,
   Platzierung und Ergebnisbildschirm.
 
@@ -113,15 +166,37 @@ werden.
 - HUD mit Gold, Threat, Core, Welle, Wellenvorschau, Commander-XP,
   Fähigkeiten, Sends, Spielerliste, Toasts und Turminspektor.
 
+### Lohnt sich Angreifen überhaupt?
+
+Gemessen mit `npm run balance`, weil die Antwort sonst Geschmackssache bleibt:
+
+| Welle | Wellenprämie | Stürmer kostet | Anteil | Stärke |
+|---|---|---|---|---|
+| 1 | ~48 G | 30 G | 63 % | x1,0 |
+| 5 | ~115 G | 40 G | 35 % | x1,6 |
+| 10 | ~239 G | 52 G | 22 % | x2,8 |
+| 20 | ~618 G | 76 G | 12 % | x8,6 |
+| 30 | ~1173 G | 100 G | 9 % | x26,7 |
+
+Angriffe werden im Verlauf *relativ billiger*, weil die Kosten mit 8 % pro
+Welle langsamer wachsen als das Einkommen mit 11 %. Früh ist ein Angriff eine
+schmerzhafte Entscheidung, spät ist Dauerbeschuss bezahlbar — genau die Kurve,
+die aggressives Spiel im Endspiel überhaupt erst erlaubt.
+
+Gleichzeitig bleiben Sends unter der PvE-Kurve (x26,7 gegen x100 Gegner-HP in
+Welle 30). Ein Angriff soll den Ausschlag geben, nicht allein entscheiden.
+
 ## Tests
 
 ```bash
-npm test              # Unit + Solo-E2E + Modi/Rematch-E2E
-npm run test:unit     # 56 Unit-Tests (Kampf, Türme, Wellen, Lane, Modi, KI)
+npm test              # Unit + Kartenprüfung + alle E2E
+npm run test:unit     # 59 Unit-Tests (Kampf, Türme, Wellen, Lane, Modi, KI, Karten)
+npm run maps          # 8 Karten gegen die BFS prüfen
 npm run test:server   # Solo-E2E gegen echten Server
 npm run test:multi    # Mehrspieler-E2E mit zwei echten Clients
 npm run test:modes    # Alle drei Modi, KI-Gegner und Rematch-Pfad
-npm run test:callwave # Wellen vorziehen, Stapeln, Vorsprungsgrenze
+npm run test:callwave # Wellen vorziehen, Stapeln, Nachschubtempo, Bonus-Abklingen
+npm run test:maps     # Kartenwahl, Rechte, und ein echtes Match auf jeder Karte
 npm run balance       # Balance- und Performance-Messung
 node server/e2e/smoke-prod.js   # Produktions-Smoketest (nach npm run build)
 ```
@@ -138,7 +213,8 @@ shared/   Regeln und Daten, die Client und Server teilen:
           enemyData.ts     8 Gegner + 3 Bosse, Wellenbudget
           waveDirector.ts  budgetbasierte Wellenzusammenstellung
           commanderData.ts 4 Commander, 16 Perks, Modifikator-System
-          sendData.ts      PvP-Einheiten und Risk/Reward
+          sendData.ts      PvP-Einheiten, Goldkosten und Freischaltstufen
+          maps.ts          die 8 Karten
           laneEditor.ts    Kartenvalidierung und Serialisierung
           pathfinder.ts    BFS (einzige Pfadregel im Projekt)
           schema.ts        replizierter Zustand (Colyseus)

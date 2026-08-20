@@ -10,6 +10,8 @@ const {
   Rng,
   TOWERS,
   SEND_UNITS,
+  sendCost,
+  sendUnlocked,
 } = require("../../shared/dist/index.js");
 const { PlayerSim } = require("../dist/sim/PlayerSim.js");
 const { AiPlayer } = require("../dist/sim/AiPlayer.js");
@@ -123,12 +125,19 @@ test("KI: sendet nur bezahlbare und freigeschaltete Einheiten", () => {
 
   let sends = 0;
   for (let i = 0; i < 60; i++) {
-    const d = ai.think(2000, ctx(sim, { threat: 25, wave: 3 }));
+    // Reichlich Gold, aber nur die unterste Freischaltstufe.
+    const d = ai.think(2000, ctx(sim, { gold: 2000, threat: 30, wave: 3 }));
     if (d?.kind === "send") {
       const def = SEND_UNITS[d.sendId];
       assert.ok(def, "echte Send-Einheit");
-      assert.ok(def.cost <= 25, `bezahlbar (${def.cost} <= 25)`);
-      assert.ok(def.minWave <= 3, `freigeschaltet (ab Welle ${def.minWave})`);
+      assert.ok(
+        sendUnlocked(def, 30),
+        `freigeschaltet (braucht ${def.threatUnlock}, hat 30)`
+      );
+      assert.ok(
+        sendCost(def, 3) <= 2000,
+        `bezahlbar (${sendCost(def, 3)} <= 2000)`
+      );
       sends++;
     }
   }

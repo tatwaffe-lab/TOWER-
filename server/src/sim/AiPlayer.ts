@@ -5,7 +5,8 @@ import {
   TOWERS,
   canSpecialize,
   nextUpgradeCost,
-  sendAvailable,
+  sendCost,
+  sendUnlocked,
 } from "@td/shared";
 import { PlayerSim } from "./PlayerSim";
 
@@ -62,9 +63,9 @@ export class AiPlayer {
     if (this.thinkTimerMs > 0) return null;
     this.thinkTimerMs = this.profile.thinkIntervalMs;
 
-    // 1) Angreifen, wenn genug Threat da ist und der Modus es erlaubt.
+    // 1) Angreifen, wenn Gold übrig ist und der Modus es erlaubt.
     if (ctx.sendsEnabled && ctx.hasTarget && this.rng.next() < this.profile.aggression) {
-      const send = this.pickSend(ctx.threat, ctx.wave);
+      const send = this.pickSend(ctx.gold, ctx.threat, ctx.wave);
       if (send) return { kind: "send", sendId: send };
     }
 
@@ -108,14 +109,21 @@ export class AiPlayer {
     return null;
   }
 
-  private pickSend(threat: number, wave: number): string | null {
+  /**
+   * Angriffe kosten jetzt Gold — dasselbe Gold, aus dem die KI ihre Türme
+   * baut. Sie darf deshalb nicht alles verpulvern, sonst steht sie in Welle
+   * 10 ohne Verteidigung da. `aggression` legt fest, welchen Anteil ihres
+   * Goldes sie für einen einzelnen Angriff riskiert.
+   */
+  private pickSend(gold: number, threat: number, wave: number): string | null {
+    const budget = gold * this.profile.aggression;
     const affordable = Object.values(SEND_UNITS).filter(
-      (def) => sendAvailable(def, wave) && def.cost <= threat
+      (def) => sendUnlocked(def, threat) && sendCost(def, wave) <= budget
     );
     if (affordable.length === 0) return null;
     // Stärkere KI wählt das teuerste bezahlbare Paket, schwächere zufällig.
     if (this.rng.next() < this.profile.skill) {
-      return affordable.sort((a, b) => b.cost - a.cost)[0].id;
+      return affordable.sort((a, b) => sendCost(b, wave) - sendCost(a, wave))[0].id;
     }
     return this.rng.pick(affordable).id;
   }

@@ -21,8 +21,14 @@ import {
   investedGold,
   nextUpgradeCost,
   resolveTowerStats,
-  sendAvailable,
+  sendCost,
+  sendUnlocked,
   xpForLevel,
+  MAPS,
+  MAP_DIFFICULTY_ORDER,
+  createMap,
+  mapPathLength,
+  mapBuildableCount,
 } from "@td/shared";
 import { audio } from "../audio/AudioManager";
 import { TILE_SIZE } from "../art/palette";
@@ -287,6 +293,9 @@ export class Ui {
           <div class="sub">Code weitergeben, damit andere beitreten können</div>
           <div class="lobbygrid">
             <div class="panel"><h3>Commander</h3><div class="commanderlist" id="cmds"></div></div>
+            <div class="panel"><h3>Karte</h3><div class="maplist" id="maps"></div>
+              <div class="hint" id="maphint" style="margin-top:8px"></div>
+            </div>
             <div class="panel"><h3>Spieler</h3><div class="playerlist" id="pl"></div>
               <div class="col" style="margin-top:12px">
                 <button id="ready" class="primary">Bereit</button>
@@ -333,6 +342,44 @@ export class Ui {
       });
       cmds.appendChild(btn);
     }
+
+    // Kartenauswahl. Nur der Host darf umstellen; alle sehen dieselbe Karte,
+    // damit im Gefecht niemand die leichteste für sich beanspruchen kann.
+    const maps = screen.querySelector<HTMLElement>("#maps")!;
+    const mapSig = `${state.mapId}:${me.isHost}`;
+    if (maps.dataset.sig !== mapSig) {
+      maps.dataset.sig = mapSig;
+      maps.innerHTML = "";
+      for (const stufe of MAP_DIFFICULTY_ORDER) {
+        const gruppe = MAPS.filter((m) => m.difficulty === stufe);
+        if (gruppe.length === 0) continue;
+        maps.appendChild(el(`<div class="mapgroup">${stufe}</div>`));
+        for (const m of gruppe) {
+          const aktiv = state.mapId === m.id;
+          const laenge = mapPathLength(m.id);
+          const bau = mapBuildableCount(m.id);
+          const btn = el<HTMLButtonElement>(`
+            <button class="mapbtn ${aktiv ? "selected" : ""}" ${me.isHost ? "" : "disabled"}
+                    title="${escapeHtml(m.description)}">
+              ${mapPreview(m.id)}
+              <span class="mapinfo">
+                <strong>${escapeHtml(m.name)}</strong>
+                <span class="tag">${laenge} Felder Weg · ${bau} Bauplätze</span>
+              </span>
+            </button>`);
+          btn.addEventListener("click", () => {
+            if (!me.isHost) return;
+            audio.play("ui-click");
+            this.send(MSG.setMap, { mapId: m.id });
+          });
+          maps.appendChild(btn);
+        }
+      }
+    }
+    const aktuelleKarte = MAPS.find((m) => m.id === state.mapId);
+    screen.querySelector("#maphint")!.textContent = me.isHost
+      ? aktuelleKarte?.description ?? ""
+      : `Der Host wählt die Karte. Aktuell: ${aktuelleKarte?.name ?? "—"}`;
 
     // Spielerliste
     const pl = screen.querySelector<HTMLElement>("#pl")!;
@@ -391,7 +438,7 @@ export class Ui {
     const commander = COMMANDERS[me.commanderId as CommanderId];
 
     this.setText(hud, "#gold", `${Math.floor(me.gold)}`);
-    this.setText(hud, "#threat", `${Math.floor(me.threat)}`);
+    this.setText(hud, "#threat", `${Math.floor(me.threat)}/${THREAT_MAX}`);
     this.setText(hud, "#hpv", `${Math.ceil(me.coreHp)}/${me.maxCoreHp}`);
     this.setText(hud, "#wave", `${state.wave}`);
     this.setText(hud, "#remaining", `${state.enemiesRemaining}`);
@@ -402,29 +449,30 @@ export class Ui {
 
     // ---- Wellenanzeige
     const wavebox = hud.querySelector<HTMLElement>(".wavebox")!;
-    const aheadNote = me.wavesAhead > 0 ? ` · ${me.wavesAhead} Welle(n) vorgezogen` : "";
+    const aheadNote = me.wavesAhead > 0 ? ` · ${me.wavesAhead} vorgezogen` : "";
+    const queueNote = me.queuedEnemies > 0 ? ` · ${me.queuedEnemies} in der Warteschlange` : "";
     if (state.waveActive) {
       wavebox.innerHTML =
-        `<strong>Welle ${me.waveIndex} läuft</strong> · ${state.enemiesRemaining} Gegner übrig${aheadNote}`;
+        `<strong>Welle ${me.waveIndex} läuft</strong> · ${state.enemiesRemaining} Gegner übrig${aheadNote}${queueNote}`;
       wavebox.classList.add("warn");
     } else {
       const secs = Math.ceil(state.nextWaveInMs / 1000);
       wavebox.innerHTML =
-        `<strong>Welle ${state.wave + 1} in ${secs}s</strong>${aheadNote}` +
+        `<strong>Welle ${state.wave + 1} in ${secs}s</strong>${aheadNote}${queueNote}` +
         `<div class="next">${escapeHtml(state.nextWavePreview || "—")}</div>`;
       wavebox.classList.remove("warn");
     }
 
-    // Rufknopf: zeigt den Bonus und sperrt bei erreichtem Vorsprung.
+    // Rufknopf: beliebig oft. Nur das Wellenlimit der Kampagne stoppt ihn.
     const callBtn = hud.querySelector<HTMLButtonElement>("#btn-call")!;
-    const atLimit = me.wavesAhead >= 3;
     const noMoreWaves = state.maxWaves > 0 && me.waveIndex >= state.maxWaves;
-    callBtn.disabled = atLimit || noMoreWaves;
+    callBtn.disabled = noMoreWaves;
     callBtn.textContent = noMoreWaves
       ? "Letzte Welle erreicht"
-      : atLimit
-        ? "Maximal 3 Wellen voraus"
-        : `Welle ${me.waveIndex + 1} rufen (Leertaste)`;
+      : `Welle ${me.waveIndex + 1} rufen (Leertaste)`;
+    callBtn.title =
+      "Beliebig oft. Jeder Ruf bringt Bonusgold, das mit dem Vorsprung abnimmt — " +
+      "das Risiko dagegen nicht.";
 
     // ---- Turmliste
     this.renderTowerButtons(hud, me);
@@ -451,7 +499,7 @@ export class Ui {
       <div id="hud" class="active">
         <div class="topbar">
           <div class="stat gold"><span class="label">Gold</span><span class="value" id="gold">0</span></div>
-          <div class="stat threat"><span class="label">Threat</span><span class="value" id="threat">0</span>
+          <div class="stat threat" title="Bedrohung wird nie ausgegeben. Sie waechst ueber Wellen und Kills und schaltet staerkere Angriffe frei."><span class="label">Bedrohung</span><span class="value" id="threat">0</span>
             <div class="bar threat"><i id="threatbar"></i></div></div>
           <div class="stat hp"><span class="label">Core</span><span class="value" id="hpv">0</span>
             <div class="bar"><i id="hpbar"></i></div></div>
@@ -536,6 +584,7 @@ export class Ui {
   private renderAbilities(hud: HTMLElement, me: PlayerState, commander: (typeof COMMANDERS)[CommanderId]) {
     const container = this.side.querySelector<HTMLElement>("#abilities")!;
     const abilityReady = me.abilityCooldownMs <= 0;
+    // Threat wird nicht ausgegeben, nur verlangt.
     const ultReady = me.ultimateCooldownMs <= 0 && me.threat >= commander.ultimate.threatCost;
     const sig = `${abilityReady}:${ultReady}:${Math.ceil(me.abilityCooldownMs / 1000)}:${Math.ceil(me.ultimateCooldownMs / 1000)}`;
     if (container.dataset.sig === sig) return;
@@ -566,20 +615,28 @@ export class Ui {
     section.style.display = "";
 
     const container = this.side.querySelector<HTMLElement>("#sends")!;
-    const sig = `${Math.floor(me.threat)}:${state.wave}:${me.sendCooldownMs > 0}:${me.sendTargetId}`;
+    // Preis und Stärke hängen an der eigenen Wellenstufe, nicht am globalen
+    // Zähler — wer vorzieht, schickt teurere und härtere Einheiten.
+    const stufe = Math.max(1, me.waveIndex, state.wave);
+    const sig = `${Math.floor(me.gold)}:${Math.floor(me.threat)}:${stufe}:${me.sendTargetId}`;
     if (container.dataset.sig === sig) return;
     container.dataset.sig = sig;
     container.innerHTML = "";
 
     for (const def of Object.values(SEND_UNITS)) {
-      const unlocked = sendAvailable(def, state.wave);
-      const affordable = me.threat >= def.cost;
-      const ready = me.sendCooldownMs <= 0;
-      const enabled = unlocked && affordable && ready && !!me.sendTargetId;
+      const unlocked = sendUnlocked(def, me.threat);
+      const kosten = sendCost(def, stufe);
+      const affordable = me.gold >= kosten;
+      const enabled = unlocked && affordable && !!me.sendTargetId;
+      const titel = unlocked
+        ? `${def.description}\n${def.count}x · ${kosten} Gold · kein Cooldown`
+        : `${def.description}\nFreigeschaltet ab ${def.threatUnlock} Bedrohung ` +
+          `(aktuell ${Math.floor(me.threat)})`;
       const btn = el<HTMLButtonElement>(`
-        <button class="sendbtn" ${enabled ? "" : "disabled"} title="${escapeHtml(def.description)}">
-          <span>${escapeHtml(def.name)}</span>
-          <span class="cost">${unlocked ? `${def.cost} T` : `W${def.minWave}`}</span>
+        <button class="sendbtn ${unlocked ? "" : "locked"}" ${enabled ? "" : "disabled"}
+                title="${escapeHtml(titel)}">
+          <span>${unlocked ? "" : "&#128274; "}${escapeHtml(def.name)}</span>
+          <span class="cost">${unlocked ? `${kosten} G` : `${def.threatUnlock} B`}</span>
         </button>`);
       btn.addEventListener("click", () => {
         audio.play("ui-click");
@@ -914,4 +971,36 @@ function escapeHtml(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/**
+ * Winzige Kartenvorschau als SVG.
+ *
+ * Bewusst kein Canvas und kein Bild: 20x12 Rechtecke sind billig genug, um
+ * sie bei jedem Lobby-Aufbau neu zu erzeugen, und sie skalieren mit dem
+ * Layout mit. Der Weg ist das Einzige, was man wirklich sehen muss — daraus
+ * liest man Länge und Windungen sofort ab.
+ */
+function mapPreview(mapId: string): string {
+  const grid = createMap(mapId);
+  const w = grid.config.width;
+  const h = grid.config.height;
+  const c = 4;
+  const teile: string[] = [];
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const t = grid.tiles[y][x];
+      if (t === "empty") continue;
+      const farbe =
+        t === "spawn" ? "#d94f7a" : t === "core" ? "#f0c04a" : t === "lane" ? "#6b7a99" : "#2a3348";
+      teile.push(`<rect x="${x * c}" y="${y * c}" width="${c}" height="${c}" fill="${farbe}"/>`);
+    }
+  }
+
+  return (
+    `<svg class="mappreview" viewBox="0 0 ${w * c} ${h * c}" width="${w * c}" height="${h * c}" ` +
+    `shape-rendering="crispEdges" aria-hidden="true">` +
+    `<rect width="${w * c}" height="${h * c}" fill="#10141d"/>${teile.join("")}</svg>`
+  );
 }

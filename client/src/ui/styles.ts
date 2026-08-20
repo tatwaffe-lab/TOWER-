@@ -118,7 +118,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .sendlist, .abilitylist { display: flex; flex-direction: column; gap: 4px; }
 .sendbtn { display: flex; justify-content: space-between; align-items: center;
   font-size: 11px; padding: 6px 8px; }
-.sendbtn .cost { color: var(--threat); }
+.sendbtn .cost { color: var(--gold); }
 
 .playerlist { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
 .playerrow { display: flex; align-items: center; gap: 6px; padding: 4px 6px;
@@ -168,13 +168,29 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 @keyframes slidein { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
 
 /* Lobby */
-.lobbygrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 720px; }
+.lobbygrid { display: grid; grid-template-columns: 1fr 1.05fr 1fr; gap: 14px; max-width: 1020px; }
 .commanderlist { display: flex; flex-direction: column; gap: 6px; }
 .cmdbtn { text-align: left; padding: 9px 11px; font-size: 12px; line-height: 1.4; }
 .cmdbtn .tag { color: var(--dim); font-size: 10px; display: block; margin-top: 2px; }
 .cmdbtn.selected .tag { color: var(--text); }
 .roomcode { font-size: 26px; letter-spacing: 7px; color: var(--gold); text-align: center;
   padding: 8px; background: #10141d; border: 2px dashed var(--border); border-radius: 4px; }
+
+/* Kartenauswahl in der Lobby */
+.maplist { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+.mapgroup { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim);
+  margin: 6px 0 2px; }
+.mapbtn { display: flex; align-items: center; gap: 9px; padding: 6px 8px; text-align: left; }
+.mapbtn:hover:not(:disabled) { border-color: var(--gold); }
+.mapbtn.selected { border-color: var(--accent); background: #2b3550; }
+.mapbtn .mapinfo { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.mapbtn .mapinfo strong { font-size: 12px; }
+.mapbtn .tag { font-size: 10px; color: var(--dim); }
+.mappreview { flex: none; border: 1px solid var(--border); border-radius: 2px; }
+
+/* Gesperrte Sends zeigen die Freischaltschwelle statt eines Preises */
+.sendbtn.locked { opacity: .5; }
+.sendbtn.locked .cost { color: var(--dim); }
 
 /* Ergebnis */
 .resulttable { width: 100%; border-collapse: collapse; font-size: 12px; }

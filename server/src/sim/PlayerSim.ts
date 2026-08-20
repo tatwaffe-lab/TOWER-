@@ -125,6 +125,8 @@ export class PlayerSim {
   perks: string[] = [];
 
   private idCounter = 0;
+  /** Lane-eigener Namensraum für IDs. Wird vom Raum auf die sessionId gesetzt. */
+  idPrefix = "";
   private rng: Rng;
 
   constructor(rng: Rng, grid?: LaneGrid) {
@@ -156,8 +158,18 @@ export class PlayerSim {
     }
   }
 
+  /**
+   * Erzeugt eine ID, die auch über Lane-Grenzen hinweg eindeutig ist.
+   *
+   * Der Zähler läuft pro Simulation, aber Gegner, Türme und Effekte aller
+   * Spieler landen serverseitig in *einer* gemeinsamen Map. Ohne den
+   * lane-eigenen Namensraum vergeben zwei Spieler beide "e1" — und der
+   * zweite Gegner überschreibt den ersten, statt zu erscheinen. Der Fehler
+   * fällt im Solospiel nie auf und macht im Mehrspieler einzelne Gegner
+   * unsichtbar.
+   */
   nextId(prefix: string): string {
-    return `${prefix}${++this.idCounter}`;
+    return `${prefix}${this.idPrefix}-${++this.idCounter}`;
   }
 
   /** Alle wirksamen Modifikatoren: Commander-Passive + gewählte Perks. */

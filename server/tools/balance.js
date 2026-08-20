@@ -8,7 +8,24 @@
  *
  * Aufruf: npm run balance
  */
-const { Rng, TOWERS, ENEMIES, planWave, buildSpawnQueue, resolveTowerStats } = require("../../shared/dist/index.js");
+const {
+  Rng,
+  TOWERS,
+  ENEMIES,
+  planWave,
+  buildSpawnQueue,
+  resolveTowerStats,
+  SEND_UNITS,
+  sendCost,
+  sendPowerMultiplier,
+  defenderReward,
+  waveGoldMultiplier,
+  MAPS,
+  createMap,
+  mapPathLength,
+  mapBuildableCount,
+  findPath,
+} = require("../../shared/dist/index.js");
 const { PlayerSim } = require("../dist/sim/PlayerSim.js");
 
 const TICK = 100;
@@ -42,8 +59,8 @@ function measureDps(towerId, level, specId, targetId, seconds = 20) {
   return tower.totalDamage / seconds;
 }
 
-function measureWave(wave, towerPlan) {
-  const sim = new PlayerSim(new Rng(wave * 13));
+function measureWave(wave, towerPlan, grid) {
+  const sim = new PlayerSim(new Rng(wave * 13), grid);
   let cost = 0;
   for (const [towerId, x, y, level, spec] of towerPlan) {
     const t = sim.addTower(towerId, x, y, "first");
@@ -162,6 +179,107 @@ for (const wave of [1, 3, 5, 8, 10, 13, 15, 18, 20, 25]) {
     r.seconds.toFixed(1).padStart(8),
     r.cpuMs.toFixed(0).padStart(8),
     r.finished ? "" : "  ABBRUCH (Softlock-Verdacht!)"
+  );
+}
+
+console.log("\n" + "=".repeat(74));
+console.log("KARTEN: gleiches Goldbudget, Türme am Weg verteilt, voll ausgebaut");
+console.log("=".repeat(74));
+
+/**
+ * Warum so und nicht einfacher:
+ *
+ * Ein erster Versuch hat fünf Türme in die obere linke Ecke gestellt und
+ * gemessen — dabei kam heraus, dass die schwerste Karte den niedrigsten Leak
+ * hat. Der Widerspruch lag an der Messung, nicht an den Karten: bei fester
+ * Turmzahl deckt ein kurzer Weg anteilig mehr ab.
+ *
+ * Realistisch ist ein festes Goldbudget und Türme entlang des Weges. Dann
+ * zeigt sich der eigentliche Unterschied: auf einer engen Karte ist irgendwann
+ * schlicht kein Platz mehr, egal wie viel Gold da ist.
+ */
+const TURMTYPEN = ["gunner", "cannon", "frost", "sniper", "tesla", "mortar"];
+
+function bauePlanFuer(grid, budget) {
+  const weg = findPath(grid, grid.spawn, grid.core);
+  const belegt = new Set();
+  const plan = [];
+  let ausgegeben = 0;
+  for (let runde = 0; runde < 4; runde++) {
+    for (let i = 1; i < weg.length; i++) {
+      const { x: px, y: py } = weg[i];
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]]) {
+        const x = px + dx;
+        const y = py + dy;
+        const k = `${x},${y}`;
+        if (grid.tiles[y]?.[x] !== "buildable" || belegt.has(k)) continue;
+        const def = TOWERS[TURMTYPEN[plan.length % TURMTYPEN.length]];
+        const voll = def.cost + def.upgrades.reduce((s, u) => s + u.cost, 0);
+        if (ausgegeben + voll > budget) return plan;
+        belegt.add(k);
+        ausgegeben += voll;
+        plan.push([def.id, x, y, def.upgrades.length, null]);
+        break;
+      }
+    }
+  }
+  return plan;
+}
+
+console.log("Karte".padEnd(17), "Stufe".padEnd(8), "Weg".padStart(4), "Bauplatz".padStart(9),
+  "Leak W10".padStart(9), "Leak W15".padStart(9), "Leak W20".padStart(9), "Summe".padStart(7));
+
+const kartenZeilen = [];
+for (const m of MAPS) {
+  const grid = createMap(m.id);
+  const w10 = measureWave(10, bauePlanFuer(grid, 3000), createMap(m.id)).leaks;
+  const w15 = measureWave(15, bauePlanFuer(grid, 5000), createMap(m.id)).leaks;
+  const w20 = measureWave(20, bauePlanFuer(grid, 8000), createMap(m.id)).leaks;
+  kartenZeilen.push({ m, w10, w15, w20, summe: w10 + w15 + w20 });
+}
+for (const z of kartenZeilen.sort((a, b) => a.summe - b.summe)) {
+  console.log(
+    z.m.name.padEnd(17),
+    z.m.difficulty.padEnd(8),
+    String(mapPathLength(z.m.id)).padStart(4),
+    String(mapBuildableCount(z.m.id)).padStart(9),
+    String(z.w10).padStart(9),
+    String(z.w15).padStart(9),
+    String(z.w20).padStart(9),
+    String(z.summe).padStart(7)
+  );
+}
+console.log("\nDie Reihenfolge muss leicht -> mittel -> schwer ergeben. Tut sie das nicht,");
+console.log("stimmt die Angabe im Menü nicht mit dem überein, was die Karte tatsächlich");
+console.log("vom Spieler verlangt.");
+
+console.log("\n" + "=".repeat(74));
+console.log("PVP-SENDS: Goldkosten gegen Einkommen — lohnt Spam im späten Spiel?");
+console.log("=".repeat(74));
+console.log("Einheit".padEnd(18), "Frei ab".padStart(8), "W1".padStart(6), "W10".padStart(6), "W20".padStart(7), "Rückfluss W20".padStart(14));
+for (const def of Object.values(SEND_UNITS)) {
+  const rueck = defenderReward(def, 20) * def.count;
+  console.log(
+    def.name.padEnd(18),
+    String(def.threatUnlock).padStart(8),
+    String(sendCost(def, 1)).padStart(6),
+    String(sendCost(def, 10)).padStart(6),
+    String(sendCost(def, 20)).padStart(7),
+    `${rueck} (${Math.round((rueck / sendCost(def, 20)) * 100)}%)`.padStart(14)
+  );
+}
+
+// Der entscheidende Vergleich: Angriffe müssen im späten Spiel *relativ*
+// billiger werden, sonst spielt niemand mehr aggressiv.
+const wellen = [1, 5, 10, 20, 30];
+console.log("\nAnteil einer Wellenprämie, den ein Stürmer kostet:");
+for (const w of wellen) {
+  const praemie = Math.round((40 + w * 8) * waveGoldMultiplier(w));
+  const kosten = sendCost(SEND_UNITS.rusher, w);
+  console.log(
+    `  Welle ${String(w).padStart(2)}: Prämie ~${String(praemie).padStart(4)} G, ` +
+      `Stürmer ${String(kosten).padStart(3)} G  =  ${((kosten / praemie) * 100).toFixed(0)} %  ` +
+      `(Stärke x${sendPowerMultiplier(w).toFixed(1)})`
   );
 }
 

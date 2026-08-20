@@ -14,7 +14,7 @@ const { Server } = require("colyseus");
 const { WebSocketTransport } = require("@colyseus/ws-transport");
 const http = require("http");
 const { MatchRoom } = require("../dist/rooms/MatchRoom");
-const { MSG, TOWERS, SEND_UNITS } = require("../../shared/dist/index.js");
+const { MSG, TOWERS, SEND_UNITS, sendCost } = require("../../shared/dist/index.js");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function assert(cond, msg) {
@@ -126,10 +126,16 @@ async function main() {
     console.log("✓ Lane-Umbau inkl. serverseitiger Pfadvalidierung");
 
     // ------------------------------------------------- PvP-Send
-    // Threat auffüllen, indem wir warten, bis genug regeneriert ist.
-    await waitFor(() => p1().threat >= SEND_UNITS.rusher.cost, 30000, "Threat regeneriert");
+    // Sends kosten jetzt Gold. Die Einstiegsstufe ist ab Threat 0 offen, also
+    // muss nur genug Gold da sein — das prüfen wir am echten Serverzustand.
+    // Erst die Kampfphase abwarten: in der Vorbereitung lehnt der Server
+    // Sends ab, und das hat mit Gold nichts zu tun.
+    await waitFor(() => room.state.phase === "playing", 30000, "Kampfphase beginnt");
+    const rusherKosten = sendCost(SEND_UNITS.rusher, Math.max(1, room.state.wave));
+    await waitFor(() => p1().gold >= rusherKosten, 60000, `genug Gold für einen Send (${rusherKosten})`);
     const enemiesAtTargetBefore = [...room.state.enemies.values()].filter((e) => e.ownerId === c2.sessionId).length;
-    const threatBefore = p1().threat;
+    const goldBeforeSend = p1().gold;
+    const threatBeforeSend = p1().threat;
 
     c1.send(MSG.sendUnits, { sendId: "rusher", targetId: c2.sessionId });
     await waitFor(
@@ -137,11 +143,62 @@ async function main() {
       5000,
       "gesendete Gegner erscheinen beim Ziel"
     );
-    assert(p1().threat < threatBefore, "Send kostet Threat");
+    assert(p1().gold < goldBeforeSend, "Send kostet Gold");
+    assert(p1().threat >= threatBeforeSend, "Threat wird nicht ausgegeben");
     assert(p1().sendsLaunched > 0, "Send wird gezählt");
-    const sentCount = [...room.state.enemies.values()].filter((e) => e.ownerId === c2.sessionId && e.sent).length;
-    assert(sentCount >= SEND_UNITS.rusher.count, `alle ${SEND_UNITS.rusher.count} Einheiten gespawnt (${sentCount})`);
-    console.log(`✓ PvP-Send erzeugt ${sentCount} echte Gegner beim Ziel`);
+
+    // Auf die vollständige Replikation warten statt eine Momentaufnahme zu
+    // nehmen — der Zustand wird mit 15 Hz gepatcht, ein Teil der Einheiten
+    // kann im selben Moment noch unterwegs sein.
+    const zaehleSends = () =>
+      [...room.state.enemies.values()].filter((e) => e.ownerId === c2.sessionId && e.sent).length;
+    await waitFor(
+      () => zaehleSends() >= SEND_UNITS.rusher.count,
+      5000,
+      `alle ${SEND_UNITS.rusher.count} Einheiten gespawnt (zuletzt ${zaehleSends()})`
+    );
+
+    /**
+     * Regression: IDs müssen über Lane-Grenzen hinweg eindeutig sein.
+     *
+     * Gegner, Türme und Effekte aller Spieler liegen serverseitig in *einer*
+     * Map. Solange jede Simulation ihre IDs bei 1 hochzählte, vergaben zwei
+     * Spieler beide "e1" — und der zweite Gegner überschrieb den ersten,
+     * statt zu erscheinen. Im Solospiel unsichtbar, im Gefecht verschwanden
+     * einzelne Gegner. Genau daran ist dieser Test aufgefallen.
+     */
+    const alleIds = [...room.state.enemies.keys()];
+    assert(
+      new Set(alleIds).size === alleIds.length,
+      `Gegner-IDs sind eindeutig (${alleIds.length} Gegner)`
+    );
+    const proSpieler = new Map();
+    for (const e of room.state.enemies.values()) {
+      proSpieler.set(e.ownerId, (proSpieler.get(e.ownerId) ?? 0) + 1);
+    }
+    assert(proSpieler.size >= 2, "beide Lanes haben eigene Gegner im Zustand");
+    console.log(
+      `✓ IDs lane-übergreifend eindeutig (${[...proSpieler.entries()].map(([, n]) => n).join(" + ")} Gegner)`
+    );
+    console.log(`✓ PvP-Send erzeugt ${zaehleSends()} echte Gegner beim Ziel`);
+
+    // Kein Cooldown: unmittelbar hintereinander muss ein zweiter Send gehen,
+    // solange Gold da ist. Genau das war der Wunsch.
+    if (p1().gold >= sendCost(SEND_UNITS.rusher, Math.max(1, room.state.wave))) {
+      const vorZweitem = p1().sendsLaunched;
+      c1.send(MSG.sendUnits, { sendId: "rusher", targetId: c2.sessionId });
+      await waitFor(() => p1().sendsLaunched > vorZweitem, 3000, "zweiter Send ohne Wartezeit");
+      console.log("✓ Kein Cooldown — zwei Sends direkt hintereinander");
+    }
+
+    // Gesperrte Stufe: ohne genug Threat wird abgelehnt.
+    if (p1().threat < SEND_UNITS["siege-beast"].threatUnlock) {
+      const vorGesperrt = p1().sendsLaunched;
+      c1.send(MSG.sendUnits, { sendId: "siege-beast", targetId: c2.sessionId });
+      await wait(400);
+      assert(p1().sendsLaunched === vorGesperrt, "gesperrte Stufe wird abgelehnt");
+      console.log("✓ Nicht freigeschaltete Send-Stufe wird serverseitig abgelehnt");
+    }
 
     // Selbstziel muss abgelehnt werden.
     const ownEnemiesBefore = [...room.state.enemies.values()].filter((e) => e.ownerId === c1.sessionId && e.sent).length;

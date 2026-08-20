@@ -51,6 +51,7 @@ async function main() {
 
     assert(room.state.phase === "playing", "Vorbereitungsphase wird übersprungen");
     assert(me().gold > goldBefore, `Bonusgold gutgeschrieben (${goldBefore} → ${me().gold})`);
+    const ersterBonus = me().gold - goldBefore;
     console.log(`✓ Welle in der Vorbereitung gerufen (+${me().gold - goldBefore} Gold)`);
 
     await waitFor(() => room.state.enemiesRemaining > 0, 8000, "Gegner erscheinen");
@@ -67,13 +68,48 @@ async function main() {
     await waitFor(() => room.state.enemiesRemaining > afterFirst, 10000, "Gegner beider Wellen laufen parallel");
     console.log(`✓ Zweite Welle gestapelt, während die erste noch lief (${room.state.enemiesRemaining} Gegner)`);
 
-    // ------------------------------------------------ Vorsprung begrenzt
-    for (let i = 0; i < 6; i++) {
+    // -------------------------------------- Vorsprung ist NICHT mehr begrenzt
+    const vorSerie = me().waveIndex;
+    for (let i = 0; i < 12; i++) {
       client.send(MSG.callWave, {});
-      await wait(200);
+      await wait(150);
     }
-    assert(me().wavesAhead <= 3, `Vorsprung ist gedeckelt (${me().wavesAhead})`);
-    console.log(`✓ Vorsprung auf 3 Wellen begrenzt (aktuell ${me().wavesAhead})`);
+    assert(
+      me().waveIndex >= vorSerie + 12,
+      `alle 12 Rufe angenommen (${vorSerie} -> ${me().waveIndex})`
+    );
+    assert(me().wavesAhead > 3, `Vorsprung über der alten Grenze (${me().wavesAhead})`);
+    console.log(`✓ Unbegrenzt vorbestellbar — ${me().wavesAhead} Wellen Vorsprung`);
+
+    // Der Bonus muss mit dem Vorsprung abklingen, sonst wäre Dauerklicken
+    // ein Goldautomat. Gemessen am echten Zustand, nicht an der Formel.
+    const goldWeitVorne = me().gold;
+    client.send(MSG.callWave, {});
+    await wait(400);
+    const bonusWeitVorne = me().gold - goldWeitVorne;
+    assert(
+      bonusWeitVorne >= 0 && bonusWeitVorne < ersterBonus,
+      `Bonus klingt ab (erster Ruf +${ersterBonus}, jetzt +${bonusWeitVorne})`
+    );
+    console.log(`✓ Bonusgold klingt ab: erster Ruf +${ersterBonus}, weit vorne +${bonusWeitVorne}`);
+
+    // Der eigentliche Sinn des Vorziehens: mehr Wellen müssen sich auch nach
+    // mehr anfühlen. Gemessen wird die tatsächliche Spawnrate im Feld, nicht
+    // die Länge der Warteschlange — die allein sagt nichts über den Druck.
+    const t0 = Date.now();
+    const lebendA = [...room.state.enemies.values()].filter((e) => e.ownerId === client.sessionId).length;
+    await wait(3000);
+    const lebendB = [...room.state.enemies.values()].filter((e) => e.ownerId === client.sessionId).length;
+    const proSekunde = (lebendB - lebendA) / ((Date.now() - t0) / 1000);
+    assert(
+      proSekunde > 3,
+      `gestapelte Wellen erhöhen den Nachschub spürbar (${proSekunde.toFixed(1)} Gegner/s)`
+    );
+    console.log(`✓ Nachschub steigt mit dem Vorsprung: ${proSekunde.toFixed(1)} Gegner/s`);
+
+    // Und die Lane darf trotzdem nicht überlaufen.
+    assert(lebendB <= 600, `Ausstoß gedeckelt (${lebendB} lebende Gegner)`);
+    console.log(`✓ ${lebendB} Gegner gleichzeitig im Feld, Obergrenze 600 gewahrt`);
 
     // ------------------- Gestapelte Wellen behalten ihre eigene Skalierung
     // Direkt am Serverzustand geprüft: die Warteschlange muss Einträge mit

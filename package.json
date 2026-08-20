@@ -12,14 +12,16 @@
     "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w client",
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
-    "test": "npm run test:unit && npm run test:server && npm run test:modes && npm run test:callwave",
+    "test": "npm run test:unit && npm run maps && npm run test:server && npm run test:modes && npm run test:callwave && npm run test:maps",
     "test:unit": "node --test server/test/*.test.js",
     "test:server": "node server/e2e/run.js",
     "test:multi": "node server/e2e/multiplayer.js",
     "balance": "node server/tools/balance.js",
     "start": "node server/dist/index.js",
     "test:modes": "node server/e2e/modes.js",
-    "test:callwave": "node server/e2e/callwave.js"
+    "test:callwave": "node server/e2e/callwave.js",
+    "maps": "node server/tools/verifyMaps.js",
+    "test:maps": "node server/e2e/maps.js"
   },
   "dependencies": {
     "express": "^4.19.2"
