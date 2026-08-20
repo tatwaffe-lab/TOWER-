@@ -60,6 +60,7 @@ export interface RuleModifiers {
   incomePerWaveAdd?: number;
   startGoldAdd?: number;
   coreHpAdd?: number;
+  /** Faktor auf den Bedrohungs-Zuwachs aus Wellen und Kills. */
   threatRegenMul?: number;
   sendCostMul?: number;
   sendHpMul?: number;
@@ -163,7 +164,7 @@ export const COMMANDERS: Record<CommanderId, CommanderDefinition> = {
     id: "warlord",
     name: "Kriegsherr",
     tagline: "Aggressives PvP über Send-Einheiten",
-    passiveText: "Gesendete Einheiten haben +25 % HP, Threat regeneriert 30 % schneller.",
+    passiveText: "Gesendete Einheiten haben +25 % HP, Bedrohung wächst 30 % schneller.",
     color: 0xd94f4f,
     accent: 0x6e1a1a,
     passive: { sendHpMul: 1.25, threatRegenMul: 1.3 },
@@ -296,7 +297,7 @@ export const PERKS: Record<string, PerkDefinition> = {
   "cheap-sends": {
     id: "cheap-sends",
     name: "Kriegswirtschaft",
-    description: "Send-Einheiten kosten 30 % weniger Threat.",
+    description: "Send-Einheiten kosten 30 % weniger Gold.",
     modifiers: { sendCostMul: 0.7 },
   },
   "tough-sends": {
@@ -314,7 +315,7 @@ export const PERKS: Record<string, PerkDefinition> = {
   "threat-surge": {
     id: "threat-surge",
     name: "Aggressionsschub",
-    description: "Threat regeneriert 50 % schneller.",
+    description: "Bedrohung wächst 50 % schneller — Angriffsstufen öffnen früher.",
     modifiers: { threatRegenMul: 1.5 },
   },
   "cheap-lanes": {

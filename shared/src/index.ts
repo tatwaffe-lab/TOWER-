@@ -133,6 +133,22 @@ export {
   defaultLaneMap,
 } from "./laneEditor";
 
+export type { Lang } from "./i18n";
+export {
+  LANGS,
+  DEFAULT_LANG,
+  LANG_LABEL,
+  isLang,
+  CONTENT_EN,
+  UI,
+  NOTICE_KEYS,
+  RESULT_REASON_KEYS,
+  tr,
+  t,
+} from "./i18n";
+
+export { germanFor, trPath, isContentPath, resolveParams } from "./content";
+
 export type { MatchPhase } from "./schema";
 export { StatusView, PlayerState, TowerState, EnemyState, EffectState, MatchState } from "./schema";
 

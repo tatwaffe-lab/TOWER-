@@ -135,7 +135,13 @@ export class MatchState extends Schema {
   @type("number") seed: number = 0;
   @type("string") roomCode: string = "";
   @type("string") winnerId: string = "";
-  @type("string") resultText: string = "";
+  /**
+   * Ergebnisgrund als Übersetzungsschlüssel plus Parameter statt als fertiger
+   * Satz. Der Server kennt die Sprache des Empfängers nicht — und im Gefecht
+   * können zwei Spieler unterschiedliche eingestellt haben.
+   */
+  @type("string") resultKey: string = "";
+  @type("string") resultParamsJson: string = "";
   @type("boolean") laneEditingOpen: boolean = true;
 
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();

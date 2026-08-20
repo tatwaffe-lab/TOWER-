@@ -176,6 +176,17 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .roomcode { font-size: 26px; letter-spacing: 7px; color: var(--gold); text-align: center;
   padding: 8px; background: #10141d; border: 2px dashed var(--border); border-radius: 4px; }
 
+/* Sprachschalter — im Menü mittig, im HUD kompakt in der Topbar */
+.langswitch { display: inline-flex; gap: 0; border: 2px solid var(--border);
+  border-radius: 4px; overflow: hidden; }
+.langbtn { border: none; border-radius: 0; padding: 6px 12px; font-size: 11px;
+  background: #1a2130; }
+.langbtn + .langbtn { border-left: 2px solid var(--border); }
+.langbtn.selected { background: #3d4f78; color: var(--text); }
+.langbtn:hover:not(.selected) { background: #2e3a52; }
+.topbar .langswitch { border-width: 1px; }
+.topbar .langbtn { padding: 4px 8px; font-size: 10px; }
+
 /* Kartenauswahl in der Lobby */
 .maplist { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
 .mapgroup { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim);

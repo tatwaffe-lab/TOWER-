@@ -283,8 +283,22 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     });
   }
 
-  private notify(client: Client, level: "info" | "warn" | "error", text: string) {
-    client.send(NOTICE, { level, text });
+  /**
+   * Schickt eine Meldung als Schlüssel plus Parameter, nicht als fertigen
+   * Satz. Der Server kennt die Spracheinstellung des Empfängers nicht — und
+   * im Gefecht können zwei Spieler unterschiedliche gewählt haben. Übersetzt
+   * wird deshalb erst im Client.
+   *
+   * Parameter, die auf Inhalte zeigen (Türme, Perks, Angriffe), reisen als
+   * Pfad wie `tower.gunner.name` und werden dort ebenfalls übersetzt.
+   */
+  private notify(
+    client: Client,
+    level: "info" | "warn" | "error",
+    key: string,
+    params?: Record<string, string | number>
+  ) {
+    client.send(NOTICE, { level, key, params });
   }
 
   // --------------------------------------------------------- Join / Leave
@@ -344,7 +358,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     const player = this.state.players.get(client.sessionId);
     if (player) {
       player.connected = true;
-      this.notify(client, "info", "Wieder verbunden.");
+      this.notify(client, "info", "notice.reconnected");
     }
   }
 
@@ -625,7 +639,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (this.state.phase !== "playing" && this.state.phase !== "preparing") return;
 
     if (this.state.maxWaves > 0 && player.waveIndex >= this.state.maxWaves) {
-      this.notify(client, "warn", "Es gibt keine weitere Welle mehr.");
+      this.notify(client, "warn", "notice.noMoreWaves");
       return;
     }
 
@@ -658,7 +672,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     }
     this.state.waveActive = true;
 
-    this.notify(client, "info", `Welle ${nextWave} vorgezogen: +${bonus} Gold`);
+    this.notify(client, "info", "notice.wavePulled", { wave: nextWave, bonus });
   }
 
   private finishWave() {
@@ -680,7 +694,13 @@ export class MatchRoom extends Room<{ state: MatchState }> {
         if (stats.incomePerWave) income += stats.incomePerWave;
       }
       this.grantGold(player, income);
-      player.threat = Math.min(THREAT_MAX, player.threat + THREAT_PER_WAVE);
+      // threatRegenMul wirkt jetzt auf den Zuwachs. Seit Bedrohung nicht mehr
+      // pro Sekunde nachläuft, wäre der Modifikator sonst wirkungslos — und
+      // der Perk "Aggressionsschub" täte schlicht nichts.
+      player.threat = Math.min(
+        THREAT_MAX,
+        player.threat + THREAT_PER_WAVE * mods.threatRegenMul
+      );
       this.grantXp(player, 60 + this.state.wave * 10);
     }
 
@@ -689,7 +709,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     // Nur die Kampagne hat ein Wellenlimit; Endlos und Gefecht laufen
     // weiter, bis jemand fällt.
     if (this.state.maxWaves > 0 && this.state.wave >= this.state.maxWaves) {
-      this.endMatch("Alle Wellen überstanden");
+      this.endMatch("result.reason.allWaves");
     }
   }
 
@@ -730,7 +750,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (!player || !rt) return;
     // Nur aus dem tatsächlich angebotenen Set — verhindert freie Perk-Wahl.
     if (!player.perkOffer.includes(perkId)) {
-      this.notify(client, "warn", "Dieser Perk steht gerade nicht zur Wahl.");
+      this.notify(client, "warn", "notice.perkNotOffered");
       return;
     }
     if (player.perks.includes(perkId)) return;
@@ -746,13 +766,13 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     player.maxCoreHp = newMax;
     if (delta > 0) player.coreHp = Math.min(newMax, player.coreHp + delta);
 
-    this.notify(client, "info", `Perk gewählt: ${PERKS[perkId]?.name ?? perkId}`);
+    this.notify(client, "info", "notice.perkChosen", { perk: `perk.${perkId}.name` });
   }
 
   // --------------------------------------------------------- Turmaktionen
 
   private handlePlaceTower(client: Client, defId: string, x: number, y: number) {
-    this.placeTowerFor(client.sessionId, defId, x, y, (level, text) => this.notify(client, level, text));
+    this.placeTowerFor(client.sessionId, defId, x, y, (level, key, params) => this.notify(client, level, key, params));
   }
 
   /**
@@ -765,7 +785,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     defId: string,
     x: number,
     y: number,
-    notify?: (level: "info" | "warn" | "error", text: string) => void
+    notify?: (
+      level: "info" | "warn" | "error",
+      key: string,
+      params?: Record<string, string | number>
+    ) => void
   ) {
     const player = this.state.players.get(sessionId);
     const rt = this.runtimes.get(sessionId);
@@ -776,17 +800,17 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (!def) return;
 
     if (rt.sim.grid.tiles[y]?.[x] !== "buildable") {
-      notify?.("warn", "Hier kann nicht gebaut werden.");
+      notify?.("warn", "notice.cantBuildHere");
       return;
     }
     if (rt.sim.towerAt(x, y)) {
-      notify?.("warn", "Feld ist bereits belegt.");
+      notify?.("warn", "notice.tileOccupied");
       return;
     }
 
     const cost = Math.round(def.cost * rt.sim.modifiers().buildCostMul * rt.sim.activeBuildCostMul());
     if (player.gold < cost) {
-      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", "notice.notEnoughGold", { cost });
       return;
     }
 
@@ -804,13 +828,17 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   }
 
   private handleUpgrade(client: Client, towerId: string) {
-    this.upgradeTowerFor(client.sessionId, towerId, (level, text) => this.notify(client, level, text));
+    this.upgradeTowerFor(client.sessionId, towerId, (level, key, params) => this.notify(client, level, key, params));
   }
 
   private upgradeTowerFor(
     sessionId: string,
     towerId: string,
-    notify?: (level: "info" | "warn" | "error", text: string) => void
+    notify?: (
+      level: "info" | "warn" | "error",
+      key: string,
+      params?: Record<string, string | number>
+    ) => void
   ) {
     const player = this.state.players.get(sessionId);
     const rt = this.runtimes.get(sessionId);
@@ -820,12 +848,12 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     const def = TOWERS[tower.defId];
     const baseCost = nextUpgradeCost(def, tower.level);
     if (baseCost === null) {
-      notify?.("warn", "Turm ist voll ausgebaut — jetzt spezialisieren.");
+      notify?.("warn", "notice.fullyUpgraded");
       return;
     }
     const cost = Math.round(baseCost * rt.sim.modifiers().upgradeCostMul * rt.sim.activeBuildCostMul());
     if (player.gold < cost) {
-      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", "notice.notEnoughGold", { cost });
       return;
     }
 
@@ -836,8 +864,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   }
 
   private handleSpecialize(client: Client, towerId: string, specializationId: string) {
-    this.specializeTowerFor(client.sessionId, towerId, specializationId, (level, text) =>
-      this.notify(client, level, text)
+    this.specializeTowerFor(client.sessionId, towerId, specializationId, (level, key, params) =>
+      this.notify(client, level, key, params)
     );
   }
 
@@ -845,7 +873,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     sessionId: string,
     towerId: string,
     specializationId: string,
-    notify?: (level: "info" | "warn" | "error", text: string) => void
+    notify?: (
+      level: "info" | "warn" | "error",
+      key: string,
+      params?: Record<string, string | number>
+    ) => void
   ) {
     const player = this.state.players.get(sessionId);
     const rt = this.runtimes.get(sessionId);
@@ -854,7 +886,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     const def = TOWERS[tower.defId];
     if (!canSpecialize(def, tower.level, tower.specializationId)) {
-      notify?.("warn", "Erst voll ausbauen, dann spezialisieren.");
+      notify?.("warn", "notice.upgradeFirst");
       return;
     }
     const spec = def.specializations.find((s) => s.id === specializationId);
@@ -862,7 +894,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
 
     const cost = Math.round(spec.cost * rt.sim.modifiers().upgradeCostMul * rt.sim.activeBuildCostMul());
     if (player.gold < cost) {
-      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", "notice.notEnoughGold", { cost });
       return;
     }
 
@@ -870,7 +902,10 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     tower.specializationId = specializationId;
     const view = this.state.towers.get(towerId);
     if (view) view.specializationId = specializationId;
-    notify?.("info", `${def.name}: ${spec.name} freigeschaltet.`);
+    notify?.("info", "notice.specUnlocked", {
+      tower: `tower.${def.id}.name`,
+      spec: `tower.${def.id}.spec.${spec.id}.name`,
+    });
   }
 
   private handleSell(client: Client, towerId: string) {
@@ -898,20 +933,20 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (!player || !rt || player.defeated) return;
 
     if (!this.state.laneEditingOpen) {
-      this.notify(client, "warn", "Lane-Umbau nur zwischen den Wellen.");
+      this.notify(client, "warn", "notice.laneBetweenWaves");
       return;
     }
 
     const cost = Math.round(LANE_EDIT_BASE_COST * rt.sim.modifiers().laneCostMul);
     if (player.gold < cost) {
-      this.notify(client, "warn", `Nicht genug Gold (${cost} nötig).`);
+      this.notify(client, "warn", "notice.notEnoughGold", { cost });
       return;
     }
 
     // Serverseitige Neuprüfung — die Client-Vorschau ist nie die Wahrheit.
     const result = validateEdit(rt.sim.grid, { action: action as "add-lane" | "remove-lane", x, y });
     if (!result.valid || !result.grid) {
-      this.notify(client, "warn", result.reason ?? "Umbau nicht möglich.");
+      this.notify(client, "warn", result.reasonKey ?? "lane.rejected");
       return;
     }
 
@@ -952,7 +987,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     rt.sim.grid = fresh;
     rt.sim.rebuildPath();
     player.laneMapJson = JSON.stringify(serializeLaneMap(fresh));
-    this.notify(client, "info", "Lane auf Standard zurückgesetzt.");
+    this.notify(client, "info", "notice.laneReset");
   }
 
   // ------------------------------------------------------ Commander-Skills
@@ -967,14 +1002,14 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     const cdField = ultimate ? "ultimateCooldownMs" : "abilityCooldownMs";
 
     if (player[cdField] > 0) {
-      this.notify(client, "warn", "Fähigkeit lädt noch.");
+      this.notify(client, "warn", "notice.abilityCooling");
       return;
     }
     // Threat wird auch hier nur *verlangt*, nicht ausgegeben. Sonst würde
     // eine Ultimate den Freischaltstand für Angriffe wieder senken — der
     // Spieler verlöre Optionen, die er sich erspielt hat.
     if (player.threat < ability.threatCost) {
-      this.notify(client, "warn", `Braucht ${ability.threatCost} Bedrohung.`);
+      this.notify(client, "warn", "notice.needThreat", { threat: ability.threatCost });
       return;
     }
 
@@ -982,7 +1017,9 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     player[cdField] = Math.round(ability.cooldownMs * mods.abilityCooldownMul);
 
     this.applyAbilityEffect(client, player, rt, ability.kind, x, y, ability.durationMs, ability.radius);
-    this.notify(client, "info", `${ability.name} aktiviert.`);
+    this.notify(client, "info", "notice.abilityUsed", {
+      ability: `cmd.${player.commanderId}.${ultimate ? "ult" : "ab"}.name`,
+    });
   }
 
   private applyAbilityEffect(
@@ -1025,7 +1062,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
         // Sofortige kostenlose Salve auf das aktuelle Ziel.
         const targetRt = this.runtimes.get(player.sendTargetId);
         if (!targetRt) {
-          this.notify(client, "warn", "Kein gültiges Ziel für den Angriff.");
+          this.notify(client, "warn", "notice.noAttackTarget");
           break;
         }
         const def = SEND_UNITS["rusher"];
@@ -1068,14 +1105,18 @@ export class MatchRoom extends Room<{ state: MatchState }> {
   // ------------------------------------------------------------ PvP-Sends
 
   private handleSend(client: Client, sendId: string, targetId: string) {
-    this.sendUnitsFor(client.sessionId, sendId, targetId, (level, text) => this.notify(client, level, text));
+    this.sendUnitsFor(client.sessionId, sendId, targetId, (level, key, params) => this.notify(client, level, key, params));
   }
 
   private sendUnitsFor(
     sessionId: string,
     sendId: string,
     targetId: string,
-    notify?: (level: "info" | "warn" | "error", text: string) => void
+    notify?: (
+      level: "info" | "warn" | "error",
+      key: string,
+      params?: Record<string, string | number>
+    ) => void
   ) {
     const player = this.state.players.get(sessionId);
     const rt = this.runtimes.get(sessionId);
@@ -1085,29 +1126,32 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     if (!def) return;
 
     if (!this.state.sendsEnabled) {
-      notify?.("warn", "In diesem Modus gibt es keine Angriffe.");
+      notify?.("warn", "notice.sendsDisabled");
       return;
     }
     if (this.state.players.size < 2) {
-      notify?.("warn", "Sends brauchen mindestens zwei Teilnehmer.");
+      notify?.("warn", "notice.needTwoPlayers");
       return;
     }
     // Threat wird nicht ausgegeben, sondern schaltet frei.
     if (!sendUnlocked(def, player.threat)) {
-      notify?.("warn", `${def.name} braucht ${def.threatUnlock} Bedrohung.`);
+      notify?.("warn", "notice.sendLocked", {
+        unit: `send.${def.id}.name`,
+        threat: def.threatUnlock,
+      });
       return;
     }
 
     const chosen = targetId || player.sendTargetId;
     // Selbstziel und ungültige/besiegte Ziele werden hart abgelehnt.
     if (!chosen || chosen === sessionId) {
-      notify?.("warn", "Ungültiges Ziel.");
+      notify?.("warn", "notice.invalidTarget");
       return;
     }
     const targetPlayer = this.state.players.get(chosen);
     const targetRt = this.runtimes.get(chosen);
     if (!targetPlayer || !targetRt || targetPlayer.defeated) {
-      notify?.("warn", "Ziel ist nicht mehr im Spiel.");
+      notify?.("warn", "notice.targetGone");
       return;
     }
 
@@ -1124,7 +1168,7 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       Math.round(sendCost(def, stufe) * mods.sendCostMul * rt.sim.activeSendCostMul())
     );
     if (player.gold < cost) {
-      notify?.("warn", `Nicht genug Gold (${cost} nötig).`);
+      notify?.("warn", "notice.notEnoughGold", { cost });
       return;
     }
 
@@ -1144,9 +1188,15 @@ export class MatchRoom extends Room<{ state: MatchState }> {
       targetRt.sim.spawnEnemy(def.spawns, { hpMul, speedMul, armorAdd, sent: true, bountyGold: bounty });
     }
 
-    notify?.("info", `${def.name} an ${targetPlayer.name} geschickt.`);
+    notify?.("info", "notice.sendLaunched", {
+      unit: `send.${def.id}.name`,
+      target: targetPlayer.name,
+    });
     const targetClient = this.clients.find((c) => c.sessionId === chosen);
-    if (targetClient) this.notify(targetClient, "warn", `${player.name} greift an: ${def.name}!`);
+    if (targetClient) this.notify(targetClient, "warn", "notice.underAttack", {
+        attacker: player.name,
+        unit: `send.${def.id}.name`,
+      });
   }
 
   // ----------------------------------------------------------------- Tick
@@ -1249,7 +1299,10 @@ export class MatchRoom extends Room<{ state: MatchState }> {
         // Threat wird nie ausgegeben — es ist der Freischaltfortschritt.
         // Kills zählen mit, damit gutes Verteidigen die stärkeren Angriffe
         // schneller öffnet als blosses Abwarten.
-        player.threat = Math.min(THREAT_MAX, player.threat + THREAT_PER_KILL);
+        player.threat = Math.min(
+          THREAT_MAX,
+          player.threat + THREAT_PER_KILL * rt.sim.modifiers().threatRegenMul
+        );
       }
 
       for (const leak of leaks) {
@@ -1292,11 +1345,11 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     // Einzelspielermodi: das Match endet mit dem Tod des Spielers.
     if (all.filter((p) => !p.isAi).length <= 1 && all.every((p) => !p.isAi)) {
       if (alive.length === 0) {
-        this.endMatch(
-          this.state.mode === "endless"
-            ? `Bis Welle ${this.state.wave} durchgehalten`
-            : "Der Core ist gefallen"
-        );
+        if (this.state.mode === "endless") {
+          this.endMatch("result.reason.reachedWave", { wave: this.state.wave });
+        } else {
+          this.endMatch("result.reason.coreLost");
+        }
       }
       return;
     }
@@ -1304,19 +1357,24 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     // Gefecht: vorbei, wenn nur noch einer steht — oder wenn kein Mensch
     // mehr lebt (sonst würden die KIs endlos weiterspielen).
     if (alive.length <= 1) {
-      this.endMatch(alive.length === 1 ? `${alive[0].name} gewinnt` : "Unentschieden");
+      if (alive.length === 1) {
+        this.endMatch("result.reason.winner", { name: alive[0].name });
+      } else {
+        this.endMatch("result.reason.draw");
+      }
       return;
     }
     if (humansAlive.length === 0) {
-      this.endMatch("Alle Spieler sind gefallen — die KI gewinnt");
+      this.endMatch("result.reason.aiWins");
     }
   }
 
-  private endMatch(reason: string) {
+  private endMatch(reasonKey: string, params?: Record<string, string | number>) {
     this.matchOver = true;
     this.state.phase = "result";
     this.state.waveActive = false;
-    this.state.resultText = reason;
+    this.state.resultKey = reasonKey;
+    this.state.resultParamsJson = params ? JSON.stringify(params) : "";
 
     // Platzierung: Überlebende zuerst (nach Core-HP), dann in umgekehrter
     // Ausscheidungsreihenfolge.
@@ -1349,7 +1407,8 @@ export class MatchRoom extends Room<{ state: MatchState }> {
     this.state.waveActive = false;
     this.state.matchClockMs = 0;
     this.state.winnerId = "";
-    this.state.resultText = "";
+    this.state.resultKey = "";
+    this.state.resultParamsJson = "";
     this.state.enemiesRemaining = 0;
     this.state.laneEditingOpen = true;
     this.state.seed = randomSeed();

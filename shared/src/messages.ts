@@ -164,9 +164,16 @@ export const validate = {
   },
 };
 
-/** Server -> Client Hinweise (Toasts). */
+/**
+ * Server -> Client Hinweise (Toasts).
+ *
+ * Bewusst Schlüssel statt fertigem Satz: der Server kennt die
+ * Spracheinstellung des Empfängers nicht, und im Gefecht können zwei Spieler
+ * unterschiedliche gewählt haben. Übersetzt wird im Client.
+ */
 export const NOTICE = "notice";
 export interface NoticeMsg {
   level: "info" | "warn" | "error";
-  text: string;
+  key: string;
+  params?: Record<string, string | number>;
 }

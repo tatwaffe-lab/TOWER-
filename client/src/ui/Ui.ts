@@ -29,6 +29,13 @@ import {
   createMap,
   mapPathLength,
   mapBuildableCount,
+  Lang,
+  LANGS,
+  LANG_LABEL,
+  isLang,
+  t as translate,
+  trPath,
+  resolveParams,
 } from "@td/shared";
 import { audio } from "../audio/AudioManager";
 import { TILE_SIZE } from "../art/palette";
@@ -41,6 +48,22 @@ import {
   joinByCode,
   tryReconnect,
 } from "../net";
+
+/**
+ * Gewählte Sprache. Reihenfolge: gemerkte Wahl, sonst Browsersprache, sonst
+ * Deutsch. Die Browsersprache als Vorgabe erspart englischen Spielern den
+ * ersten Klick, ohne jemandem etwas aufzuzwingen.
+ */
+function ladeSprache(): Lang {
+  try {
+    const gemerkt = localStorage.getItem("td_lang");
+    if (isLang(gemerkt)) return gemerkt;
+  } catch {
+    // Privater Modus o. ä. — dann eben die Browsersprache.
+  }
+  const browser = (navigator.language || "de").slice(0, 2).toLowerCase();
+  return browser === "de" ? "de" : "en";
+}
 
 const el = <T extends HTMLElement = HTMLElement>(html: string): T => {
   const tpl = document.createElement("template");
@@ -70,10 +93,66 @@ export class Ui {
   private lastWave = -1;
   private lastPerkOffer = "";
   private playerName = "";
+  private lang: Lang = ladeSprache();
 
   constructor(root: HTMLElement, side: HTMLElement) {
     this.root = root;
     this.side = side;
+    document.documentElement.lang = this.lang;
+  }
+
+  /** Oberflächentext. */
+  private T(key: string, params?: Record<string, string | number>): string {
+    return translate(key, this.lang, params);
+  }
+
+  /** Inhaltstext über seinen Pfad, z. B. `tower.gunner.name`. */
+  private C(path: string): string {
+    return trPath(path, this.lang);
+  }
+
+  /**
+   * Sprache umschalten.
+   *
+   * Baut die Oberfläche komplett neu auf statt einzelne Knoten zu tauschen:
+   * fast jeder Teil des HUD zwischenspeichert seinen Zustand in
+   * `dataset.sig`, um unnötiges Neuzeichnen zu sparen. Diese Signaturen
+   * kennen die Sprache nicht — ohne vollständigen Neuaufbau bliebe die halbe
+   * Oberfläche in der alten Sprache stehen, bis sich zufällig ein Wert
+   * ändert.
+   */
+  private setLang(lang: Lang) {
+    if (lang === this.lang) return;
+    this.lang = lang;
+    document.documentElement.lang = lang;
+    try {
+      localStorage.setItem("td_lang", lang);
+    } catch {
+      // Nicht speicherbar? Dann gilt die Wahl eben nur für diese Sitzung.
+    }
+    this.root.innerHTML = "";
+    this.side.innerHTML = "";
+    this.root.dataset.screen = "";
+    this.lastPhase = "";
+    this.lastWave = -1;
+    if (this.state) this.render();
+    else this.showMenu();
+  }
+
+  /** Der Sprachschalter als fertiges Element. */
+  private langSwitch(): HTMLElement {
+    const box = el(`<div class="langswitch" role="group" aria-label="${escapeHtml(this.T("menu.language"))}"></div>`);
+    for (const l of LANGS) {
+      const btn = el<HTMLButtonElement>(
+        `<button class="langbtn ${l === this.lang ? "selected" : ""}" data-lang="${l}">${LANG_LABEL[l]}</button>`
+      );
+      btn.addEventListener("click", () => {
+        audio.play("ui-click");
+        this.setLang(l);
+      });
+      box.appendChild(btn);
+    }
+    return box;
   }
 
   attachScene(scene: MatchScene) {
@@ -90,39 +169,41 @@ export class Ui {
 
     const screen = el(`
       <div class="screen">
-        <h1>ARCANE INDUSTRY</h1>
-        <div class="sub">Tower Defense · Kampagne, Endlos und Gefecht</div>
+        <h1>${escapeHtml(this.T("menu.title"))}</h1>
+        <div class="sub">${escapeHtml(this.T("menu.subtitle"))}</div>
         <div class="panel col" style="min-width:520px">
-          <label class="row"><span style="width:70px;color:var(--dim);font-size:12px">Name</span>
-            <input id="name" maxlength="16" placeholder="Dein Name" value="${savedName}" style="flex:1"></label>
+          <label class="row"><span style="width:70px;color:var(--dim);font-size:12px">${escapeHtml(this.T("menu.nameLabel"))}</span>
+            <input id="name" maxlength="16" placeholder="${escapeHtml(this.T("menu.namePlaceholder"))}" value="${savedName}" style="flex:1"></label>
 
           <div class="modelist">
             ${GAME_MODE_IDS.map(
               (id) => `<button class="modebtn" data-mode="${id}">
-                <strong>${escapeHtml(GAME_MODES[id].name)}</strong>
-                <span class="tag">${escapeHtml(GAME_MODES[id].tagline)}</span>
-                <span class="tag desc">${escapeHtml(GAME_MODES[id].description)}</span>
+                <strong>${escapeHtml(this.C(`mode.${id}.name`))}</strong>
+                <span class="tag">${escapeHtml(this.C(`mode.${id}.tagline`))}</span>
+                <span class="tag desc">${escapeHtml(this.C(`mode.${id}.desc`))}</span>
               </button>`
             ).join("")}
           </div>
 
           <div class="row" style="margin-top:4px">
-            <input id="code" maxlength="6" placeholder="RAUMCODE" style="flex:1;text-transform:uppercase">
-            <button id="join">Beitreten</button>
+            <input id="code" maxlength="6" placeholder="${escapeHtml(this.T("menu.codePlaceholder"))}" style="flex:1;text-transform:uppercase">
+            <button id="join">${escapeHtml(this.T("menu.join"))}</button>
           </div>
           <div class="err" id="err">${errorText}</div>
         </div>
+        <div id="langbox"></div>
         <div class="hint">
-          Klick = bauen/auswählen · 1–9 = Turm wählen · E = Lane-Editor<br>
-          Q = Fähigkeit · W = Ultimate · Esc = Abwählen
+          ${escapeHtml(this.T("menu.controls1"))}<br>
+          ${escapeHtml(this.T("menu.controls2"))}
         </div>
       </div>`);
     this.root.appendChild(screen);
+    screen.querySelector("#langbox")!.appendChild(this.langSwitch());
 
     const nameInput = screen.querySelector<HTMLInputElement>("#name")!;
     const err = screen.querySelector<HTMLElement>("#err")!;
     const getName = () => {
-      const value = nameInput.value.trim() || "Spieler";
+      const value = nameInput.value.trim() || this.T("menu.defaultName");
       localStorage.setItem("td_name", value);
       this.playerName = value;
       return value;
@@ -131,7 +212,7 @@ export class Ui {
     const connect = async (fn: () => Promise<MatchRoom>) => {
       audio.unlock();
       audio.play("ui-click");
-      err.textContent = "Verbinde…";
+      err.textContent = this.T("menu.connecting");
       try {
         const room = await fn();
         this.bindRoom(room);
@@ -150,7 +231,7 @@ export class Ui {
     screen.querySelector("#join")!.addEventListener("click", () => {
       const code = screen.querySelector<HTMLInputElement>("#code")!.value.trim().toUpperCase();
       if (!code) {
-        err.textContent = "Bitte einen Raumcode eingeben.";
+        err.textContent = this.T("menu.needCode");
         audio.play("ui-error");
         return;
       }
@@ -170,12 +251,18 @@ export class Ui {
     this.state = room.state;
     audio.startMusic();
 
-    room.onMessage(NOTICE, (msg: NoticeMsg) => this.toast(msg.level, msg.text));
-    room.onError((code, message) => this.toast("error", `Serverfehler ${code}: ${message ?? ""}`));
+    room.onMessage(NOTICE, (msg: NoticeMsg) =>
+      // Der Server schickt Schlüssel und Parameter; Inhaltspfade darin
+      // (Turm-, Perk-, Angriffsnamen) werden mitübersetzt.
+      this.toast(msg.level, this.T(msg.key, resolveParams(msg.params, this.lang)))
+    );
+    room.onError((code, message) =>
+      this.toast("error", this.T("net.serverError", { code, msg: message ?? "" }))
+    );
     room.onLeave(() => {
       // Nur wenn der Austritt NICHT von uns ausgelöst wurde (dann ist
       // this.room bereits null und das Menü steht schon).
-      if (this.room === room) this.leaveToMenu("Verbindung zum Match beendet.");
+      if (this.room === room) this.leaveToMenu(this.T("net.matchEnded"));
     });
 
     room.onStateChange(() => this.render());
@@ -228,7 +315,7 @@ export class Ui {
     try {
       this.room?.send(type, payload as never);
     } catch {
-      this.toast("error", "Nachricht konnte nicht gesendet werden.");
+      this.toast("error", this.T("net.sendFailed"));
     }
   }
 
@@ -288,19 +375,19 @@ export class Ui {
     if (!screen) {
       screen = el(`
         <div class="screen">
-          <h1>LOBBY</h1>
+          <h1>${escapeHtml(this.T("lobby.title"))}</h1>
           <div class="roomcode" id="rc"></div>
-          <div class="sub">Code weitergeben, damit andere beitreten können</div>
+          <div class="sub">${escapeHtml(this.T("lobby.shareCode"))}</div>
           <div class="lobbygrid">
-            <div class="panel"><h3>Commander</h3><div class="commanderlist" id="cmds"></div></div>
-            <div class="panel"><h3>Karte</h3><div class="maplist" id="maps"></div>
+            <div class="panel"><h3>${escapeHtml(this.T("lobby.commander"))}</h3><div class="commanderlist" id="cmds"></div></div>
+            <div class="panel"><h3>${escapeHtml(this.T("lobby.map"))}</h3><div class="maplist" id="maps"></div>
               <div class="hint" id="maphint" style="margin-top:8px"></div>
             </div>
-            <div class="panel"><h3>Spieler</h3><div class="playerlist" id="pl"></div>
+            <div class="panel"><h3>${escapeHtml(this.T("lobby.players"))}</h3><div class="playerlist" id="pl"></div>
               <div class="col" style="margin-top:12px">
-                <button id="ready" class="primary">Bereit</button>
-                <button id="start">Jetzt starten (Host)</button>
-                <button id="leave" class="danger">Verlassen</button>
+                <button id="ready" class="primary">${escapeHtml(this.T("lobby.ready"))}</button>
+                <button id="start">${escapeHtml(this.T("lobby.startHost"))}</button>
+                <button id="leave" class="danger">${escapeHtml(this.T("lobby.leave"))}</button>
               </div>
             </div>
           </div>
@@ -331,10 +418,10 @@ export class Ui {
       const c = COMMANDERS[id];
       const btn = el<HTMLButtonElement>(`
         <button class="cmdbtn ${me.commanderId === id ? "selected" : ""}">
-          <strong>${c.name}</strong>
-          <span class="tag">${c.tagline}</span>
-          <span class="tag">${c.passiveText}</span>
-          <span class="tag">Q: ${c.ability.name} · W: ${c.ultimate.name}</span>
+          <strong>${escapeHtml(this.C(`cmd.${id}.name`))}</strong>
+          <span class="tag">${escapeHtml(this.C(`cmd.${id}.tagline`))}</span>
+          <span class="tag">${escapeHtml(this.C(`cmd.${id}.passive`))}</span>
+          <span class="tag">Q: ${escapeHtml(this.C(`cmd.${id}.ab.name`))} · W: ${escapeHtml(this.C(`cmd.${id}.ult.name`))}</span>
         </button>`);
       btn.addEventListener("click", () => {
         audio.play("ui-click");
@@ -346,25 +433,27 @@ export class Ui {
     // Kartenauswahl. Nur der Host darf umstellen; alle sehen dieselbe Karte,
     // damit im Gefecht niemand die leichteste für sich beanspruchen kann.
     const maps = screen.querySelector<HTMLElement>("#maps")!;
-    const mapSig = `${state.mapId}:${me.isHost}`;
+    const mapSig = `${state.mapId}:${me.isHost}:${this.lang}`;
     if (maps.dataset.sig !== mapSig) {
       maps.dataset.sig = mapSig;
       maps.innerHTML = "";
       for (const stufe of MAP_DIFFICULTY_ORDER) {
         const gruppe = MAPS.filter((m) => m.difficulty === stufe);
         if (gruppe.length === 0) continue;
-        maps.appendChild(el(`<div class="mapgroup">${stufe}</div>`));
+        maps.appendChild(
+          el(`<div class="mapgroup">${escapeHtml(this.C(`difficulty.${stufe}`))}</div>`)
+        );
         for (const m of gruppe) {
           const aktiv = state.mapId === m.id;
           const laenge = mapPathLength(m.id);
           const bau = mapBuildableCount(m.id);
           const btn = el<HTMLButtonElement>(`
             <button class="mapbtn ${aktiv ? "selected" : ""}" ${me.isHost ? "" : "disabled"}
-                    title="${escapeHtml(m.description)}">
+                    title="${escapeHtml(this.C(`map.${m.id}.desc`))}">
               ${mapPreview(m.id)}
               <span class="mapinfo">
-                <strong>${escapeHtml(m.name)}</strong>
-                <span class="tag">${laenge} Felder Weg · ${bau} Bauplätze</span>
+                <strong>${escapeHtml(this.C(`map.${m.id}.name`))}</strong>
+                <span class="tag">${escapeHtml(this.T("lobby.mapStats", { tiles: laenge, spots: bau }))}</span>
               </span>
             </button>`);
           btn.addEventListener("click", () => {
@@ -378,8 +467,12 @@ export class Ui {
     }
     const aktuelleKarte = MAPS.find((m) => m.id === state.mapId);
     screen.querySelector("#maphint")!.textContent = me.isHost
-      ? aktuelleKarte?.description ?? ""
-      : `Der Host wählt die Karte. Aktuell: ${aktuelleKarte?.name ?? "—"}`;
+      ? aktuelleKarte
+        ? this.C(`map.${aktuelleKarte.id}.desc`)
+        : ""
+      : this.T("lobby.hostPicksMap", {
+          map: aktuelleKarte ? this.C(`map.${aktuelleKarte.id}.name`) : "—",
+        });
 
     // Spielerliste
     const pl = screen.querySelector<HTMLElement>("#pl")!;
@@ -395,7 +488,7 @@ export class Ui {
     }
 
     const readyBtn = screen.querySelector<HTMLButtonElement>("#ready")!;
-    readyBtn.textContent = me.ready ? "Doch nicht bereit" : "Bereit";
+    readyBtn.textContent = me.ready ? this.T("lobby.notReady") : this.T("lobby.ready");
     readyBtn.className = me.ready ? "" : "primary";
 
     const startBtn = screen.querySelector<HTMLButtonElement>("#start")!;
@@ -404,8 +497,8 @@ export class Ui {
     const hint = screen.querySelector<HTMLElement>("#lobbyhint")!;
     hint.textContent =
       state.players.size === 1
-        ? "Alleine spielbar — oder auf Mitspieler warten (bis 4). Sends brauchen mindestens 2 Spieler."
-        : `${state.players.size} Spieler im Raum. Das Match startet, wenn alle bereit sind.`;
+        ? this.T("lobby.soloOrWait")
+        : this.T("lobby.playersInRoom", { n: state.players.size });
   }
 
   // ------------------------------------------------------------------- HUD
@@ -442,23 +535,35 @@ export class Ui {
     this.setText(hud, "#hpv", `${Math.ceil(me.coreHp)}/${me.maxCoreHp}`);
     this.setText(hud, "#wave", `${state.wave}`);
     this.setText(hud, "#remaining", `${state.enemiesRemaining}`);
-    this.setText(hud, "#cmdname", `${commander.name} · Lv ${me.commanderLevel}`);
+    this.setText(
+      hud,
+      "#cmdname",
+      this.T("hud.cmdLevel", {
+        name: this.C(`cmd.${me.commanderId}.name`),
+        level: me.commanderLevel,
+      })
+    );
     this.setBar(hud, "#hpbar", hpPct);
     this.setBar(hud, "#threatbar", threatPct);
     this.setBar(hud, "#xpbar", xpPct);
 
     // ---- Wellenanzeige
     const wavebox = hud.querySelector<HTMLElement>(".wavebox")!;
-    const aheadNote = me.wavesAhead > 0 ? ` · ${me.wavesAhead} vorgezogen` : "";
-    const queueNote = me.queuedEnemies > 0 ? ` · ${me.queuedEnemies} in der Warteschlange` : "";
+    const aheadNote =
+      me.wavesAhead > 0 ? ` · ${this.T("hud.ahead", { n: me.wavesAhead })}` : "";
+    const queueNote =
+      me.queuedEnemies > 0 ? ` · ${this.T("hud.queued", { n: me.queuedEnemies })}` : "";
     if (state.waveActive) {
       wavebox.innerHTML =
-        `<strong>Welle ${me.waveIndex} läuft</strong> · ${state.enemiesRemaining} Gegner übrig${aheadNote}${queueNote}`;
+        `<strong>${escapeHtml(this.T("hud.waveRunning", { wave: me.waveIndex }))}</strong>` +
+        ` · ${escapeHtml(this.T("hud.enemiesLeft", { n: state.enemiesRemaining }))}` +
+        `${escapeHtml(aheadNote)}${escapeHtml(queueNote)}`;
       wavebox.classList.add("warn");
     } else {
       const secs = Math.ceil(state.nextWaveInMs / 1000);
       wavebox.innerHTML =
-        `<strong>Welle ${state.wave + 1} in ${secs}s</strong>${aheadNote}${queueNote}` +
+        `<strong>${escapeHtml(this.T("hud.waveIn", { wave: state.wave + 1, secs }))}</strong>` +
+        `${escapeHtml(aheadNote)}${escapeHtml(queueNote)}` +
         `<div class="next">${escapeHtml(state.nextWavePreview || "—")}</div>`;
       wavebox.classList.remove("warn");
     }
@@ -468,11 +573,9 @@ export class Ui {
     const noMoreWaves = state.maxWaves > 0 && me.waveIndex >= state.maxWaves;
     callBtn.disabled = noMoreWaves;
     callBtn.textContent = noMoreWaves
-      ? "Letzte Welle erreicht"
-      : `Welle ${me.waveIndex + 1} rufen (Leertaste)`;
-    callBtn.title =
-      "Beliebig oft. Jeder Ruf bringt Bonusgold, das mit dem Vorsprung abnimmt — " +
-      "das Risiko dagegen nicht.";
+      ? this.T("hud.noMoreWaves")
+      : this.T("hud.callWave", { wave: me.waveIndex + 1 });
+    callBtn.title = this.T("hud.callWaveTip");
 
     // ---- Turmliste
     this.renderTowerButtons(hud, me);
@@ -489,7 +592,9 @@ export class Ui {
       this.setText(
         hud,
         "#editinfo",
-        state.laneEditingOpen ? "Lane-Editor: Klick fügt Weg hinzu, Shift+Klick entfernt." : "Umbau nur zwischen Wellen."
+        state.laneEditingOpen
+          ? this.T("hud.laneEditorHint")
+          : this.T("hud.laneOnlyBetween")
       );
     }
   }
@@ -498,31 +603,32 @@ export class Ui {
     const hud = el(`
       <div id="hud" class="active">
         <div class="topbar">
-          <div class="stat gold"><span class="label">Gold</span><span class="value" id="gold">0</span></div>
-          <div class="stat threat" title="Bedrohung wird nie ausgegeben. Sie waechst ueber Wellen und Kills und schaltet staerkere Angriffe frei."><span class="label">Bedrohung</span><span class="value" id="threat">0</span>
+          <div class="stat gold"><span class="label">${escapeHtml(this.T("hud.gold"))}</span><span class="value" id="gold">0</span></div>
+          <div class="stat threat" title="${escapeHtml(this.T("hud.threatTip"))}"><span class="label">${escapeHtml(this.T("hud.threat"))}</span><span class="value" id="threat">0</span>
             <div class="bar threat"><i id="threatbar"></i></div></div>
-          <div class="stat hp"><span class="label">Core</span><span class="value" id="hpv">0</span>
+          <div class="stat hp"><span class="label">${escapeHtml(this.T("hud.core"))}</span><span class="value" id="hpv">0</span>
             <div class="bar"><i id="hpbar"></i></div></div>
-          <div class="stat"><span class="label">Welle</span><span class="value" id="wave">0</span></div>
-          <div class="stat"><span class="label">Gegner</span><span class="value" id="remaining">0</span></div>
+          <div class="stat"><span class="label">${escapeHtml(this.T("hud.wave"))}</span><span class="value" id="wave">0</span></div>
+          <div class="stat"><span class="label">${escapeHtml(this.T("hud.remaining"))}</span><span class="value" id="remaining">0</span></div>
           <div class="spacer"></div>
           <div class="stat"><span class="label" id="cmdname"></span>
             <div class="bar xp"><i id="xpbar"></i></div></div>
+          <div id="hudlang"></div>
           <button id="btn-edit" style="padding:5px 10px;font-size:11px">Lane (E)</button>
-          <button id="btn-audio" style="padding:5px 10px;font-size:11px">Ton</button>
-          <button id="btn-leave" class="danger" style="padding:5px 10px;font-size:11px">Verlassen</button>
+          <button id="btn-audio" style="padding:5px 10px;font-size:11px">${escapeHtml(this.T("hud.sound"))}</button>
+          <button id="btn-leave" class="danger" style="padding:5px 10px;font-size:11px">${escapeHtml(this.T("lobby.leave"))}</button>
         </div>
 
         <div class="wavebox"></div>
-        <button id="btn-call" class="callwave">Welle rufen (Leertaste)</button>
+        <button id="btn-call" class="callwave"></button>
         <div class="toasts"></div>
 
 
         <div class="inspector" id="inspector"></div>
         <div class="editmode">
           <span id="editinfo"></span>
-          <button id="editreset" style="padding:5px 10px;font-size:11px">Zurücksetzen</button>
-          <button id="editdone" style="padding:5px 10px;font-size:11px">Fertig</button>
+          <button id="editreset" style="padding:5px 10px;font-size:11px">${escapeHtml(this.T("hud.resetLane"))}</button>
+          <button id="editdone" style="padding:5px 10px;font-size:11px">${escapeHtml(this.T("hud.editExit"))}</button>
         </div>
         <div class="perkpick" id="perkpick"></div>
       </div>`);
@@ -531,12 +637,13 @@ export class Ui {
     this.side.classList.add("active");
     this.side.innerHTML = `
       <div class="sidebar">
-        <div class="section"><h4>Türme</h4><div class="towergrid" id="towers"></div></div>
-        <div class="section"><h4>Commander</h4><div class="abilitylist" id="abilities"></div></div>
-        <div class="section" id="sendsection"><h4>Angriff senden</h4><div class="sendlist" id="sends"></div></div>
-        <div class="section"><h4>Spieler</h4><div class="playerlist" id="players"></div></div>
+        <div class="section"><h4>${escapeHtml(this.T("hud.towers"))}</h4><div class="towergrid" id="towers"></div></div>
+        <div class="section"><h4>${escapeHtml(this.T("lobby.commander"))}</h4><div class="abilitylist" id="abilities"></div></div>
+        <div class="section" id="sendsection"><h4>${escapeHtml(this.T("hud.attacks"))}</h4><div class="sendlist" id="sends"></div></div>
+        <div class="section"><h4>${escapeHtml(this.T("hud.participants"))}</h4><div class="playerlist" id="players"></div></div>
       </div>`;
 
+    hud.querySelector("#hudlang")!.appendChild(this.langSwitch());
     hud.querySelector("#btn-call")!.addEventListener("click", () => this.callWave());
 
     hud.querySelector("#btn-edit")!.addEventListener("click", () => this.toggleLaneEdit());
@@ -549,14 +656,16 @@ export class Ui {
     hud.querySelector("#btn-audio")!.addEventListener("click", (ev) => {
       audio.sfxEnabled = !audio.sfxEnabled;
       audio.setMusicEnabled(audio.sfxEnabled);
-      (ev.currentTarget as HTMLElement).textContent = audio.sfxEnabled ? "Ton" : "Stumm";
+      (ev.currentTarget as HTMLElement).textContent = audio.sfxEnabled
+        ? this.T("hud.sound")
+        : this.T("hud.muted");
     });
     return hud;
   }
 
   private renderTowerButtons(hud: HTMLElement, me: PlayerState) {
     const container = this.side.querySelector<HTMLElement>("#towers")!;
-    const signature = `${Math.floor(me.gold)}:${this.selectedTowerDef}`;
+    const signature = `${Math.floor(me.gold)}:${this.selectedTowerDef}:${this.lang}`;
     if (container.dataset.sig === signature) return;
     container.dataset.sig = signature;
     container.innerHTML = "";
@@ -565,8 +674,8 @@ export class Ui {
       const affordable = me.gold >= def.cost;
       const btn = el<HTMLButtonElement>(`
         <button class="towerbtn ${affordable ? "" : "unaffordable"} ${this.selectedTowerDef === def.id ? "selected" : ""}"
-                title="${escapeHtml(def.role)}">
-          <span>${index + 1}. ${escapeHtml(def.name)}</span>
+                title="${escapeHtml(this.C(`tower.${def.id}.role`))}">
+          <span>${index + 1}. ${escapeHtml(this.C(`tower.${def.id}.name`))}</span>
           <span class="cost">${def.cost} G</span>
         </button>`);
       btn.addEventListener("click", () => {
@@ -586,7 +695,7 @@ export class Ui {
     const abilityReady = me.abilityCooldownMs <= 0;
     // Threat wird nicht ausgegeben, nur verlangt.
     const ultReady = me.ultimateCooldownMs <= 0 && me.threat >= commander.ultimate.threatCost;
-    const sig = `${abilityReady}:${ultReady}:${Math.ceil(me.abilityCooldownMs / 1000)}:${Math.ceil(me.ultimateCooldownMs / 1000)}`;
+    const sig = `${abilityReady}:${ultReady}:${Math.ceil(me.abilityCooldownMs / 1000)}:${Math.ceil(me.ultimateCooldownMs / 1000)}:${this.lang}`;
     if (container.dataset.sig === sig) return;
     container.dataset.sig = sig;
     container.innerHTML = "";
@@ -595,14 +704,15 @@ export class Ui {
       const btn = el<HTMLButtonElement>(`
         <button class="sendbtn" ${ready ? "" : "disabled"} title="${escapeHtml(desc)}">
           <span>${label} ${escapeHtml(name)}</span>
-          <span class="cost">${ready ? "BEREIT" : `${Math.ceil(cd / 1000)}s`}</span>
+          <span class="cost">${ready ? escapeHtml(this.T("lobby.ready").toUpperCase()) : `${Math.ceil(cd / 1000)}s`}</span>
         </button>`);
       btn.addEventListener("click", () => this.useAbility(ultimate));
       container.appendChild(btn);
     };
 
-    mk("Q", commander.ability.name, abilityReady, me.abilityCooldownMs, false, commander.ability.description);
-    mk("W", commander.ultimate.name, ultReady, me.ultimateCooldownMs, true, commander.ultimate.description);
+    const cid = me.commanderId;
+    mk("Q", this.C(`cmd.${cid}.ab.name`), abilityReady, me.abilityCooldownMs, false, this.C(`cmd.${cid}.ab.desc`));
+    mk("W", this.C(`cmd.${cid}.ult.name`), ultReady, me.ultimateCooldownMs, true, this.C(`cmd.${cid}.ult.desc`));
   }
 
   private renderSends(hud: HTMLElement, me: PlayerState, state: MatchState) {
@@ -618,7 +728,7 @@ export class Ui {
     // Preis und Stärke hängen an der eigenen Wellenstufe, nicht am globalen
     // Zähler — wer vorzieht, schickt teurere und härtere Einheiten.
     const stufe = Math.max(1, me.waveIndex, state.wave);
-    const sig = `${Math.floor(me.gold)}:${Math.floor(me.threat)}:${stufe}:${me.sendTargetId}`;
+    const sig = `${Math.floor(me.gold)}:${Math.floor(me.threat)}:${stufe}:${me.sendTargetId}:${this.lang}`;
     if (container.dataset.sig === sig) return;
     container.dataset.sig = sig;
     container.innerHTML = "";
@@ -628,14 +738,18 @@ export class Ui {
       const kosten = sendCost(def, stufe);
       const affordable = me.gold >= kosten;
       const enabled = unlocked && affordable && !!me.sendTargetId;
+      const beschreibung = this.C(`send.${def.id}.desc`);
       const titel = unlocked
-        ? `${def.description}\n${def.count}x · ${kosten} Gold · kein Cooldown`
-        : `${def.description}\nFreigeschaltet ab ${def.threatUnlock} Bedrohung ` +
-          `(aktuell ${Math.floor(me.threat)})`;
+        ? this.T("hud.sendTip", { desc: beschreibung, count: def.count, cost: kosten })
+        : this.T("hud.sendLockedTip", {
+            desc: beschreibung,
+            threat: def.threatUnlock,
+            have: Math.floor(me.threat),
+          });
       const btn = el<HTMLButtonElement>(`
         <button class="sendbtn ${unlocked ? "" : "locked"}" ${enabled ? "" : "disabled"}
                 title="${escapeHtml(titel)}">
-          <span>${unlocked ? "" : "&#128274; "}${escapeHtml(def.name)}</span>
+          <span>${unlocked ? "" : "&#128274; "}${escapeHtml(this.C(`send.${def.id}.name`))}</span>
           <span class="cost">${unlocked ? `${kosten} G` : `${def.threatUnlock} B`}</span>
         </button>`);
       btn.addEventListener("click", () => {
@@ -661,7 +775,7 @@ export class Ui {
       const row = el(`
         <div class="playerrow ${isMe ? "me" : ""} ${p.defeated ? "dead" : ""} ${isTarget ? "target" : ""}">
           <span class="dot ${p.connected ? "" : "off"}"></span>
-          <span class="nm">${escapeHtml(p.name)}${isMe ? " (du)" : ""}</span>
+          <span class="nm">${escapeHtml(p.name)}${isMe ? ` (${escapeHtml(this.T("hud.you"))})` : ""}</span>
           <span style="color:var(--hp)">${Math.ceil(p.coreHp)}</span>
         </div>`);
       if (!isMe && !p.defeated) {
@@ -697,37 +811,41 @@ export class Ui {
       ? def.specializations.find((s) => s.id === tower.specializationId)
       : null;
 
-    const sig = `${towerId}:${tower.level}:${tower.specializationId}:${tower.targeting}:${Math.floor(me.gold)}`;
+    const sig = `${towerId}:${tower.level}:${tower.specializationId}:${tower.targeting}:${Math.floor(me.gold)}:${this.lang}`;
     if (box.dataset.sig === sig) return;
     box.dataset.sig = sig;
     box.classList.add("active");
 
     box.innerHTML = `
-      <h4>${escapeHtml(def.name)}${spec ? ` — ${escapeHtml(spec.name)}` : ""}</h4>
-      <div class="role">${escapeHtml(spec ? spec.description : def.role)}</div>
-      <div class="statline"><span>Stufe</span><span>${tower.level}/${def.upgrades.length}</span></div>
-      <div class="statline"><span>Schaden</span><span>${stats.damage}</span></div>
-      <div class="statline"><span>Reichweite</span><span>${stats.range}</span></div>
-      <div class="statline"><span>Feuerrate</span><span>${(1000 / Math.max(1, stats.fireRateMs)).toFixed(2)}/s</span></div>
-      <div class="statline"><span>Schadenstyp</span><span>${stats.damageType}</span></div>
-      ${stats.applies?.length ? `<div class="statline"><span>Effekte</span><span>${stats.applies.map((a) => a.kind).join(", ")}</span></div>` : ""}
-      <div class="statline"><span>Verursacht</span><span>${tower.totalDamage}</span></div>
+      <h4>${escapeHtml(this.C(`tower.${def.id}.name`))}${
+        spec ? ` — ${escapeHtml(this.C(`tower.${def.id}.spec.${spec.id}.name`))}` : ""
+      }</h4>
+      <div class="role">${escapeHtml(
+        spec ? this.C(`tower.${def.id}.spec.${spec.id}.desc`) : this.C(`tower.${def.id}.role`)
+      )}</div>
+      <div class="statline"><span>${escapeHtml(this.T("insp.level"))}</span><span>${tower.level}/${def.upgrades.length}</span></div>
+      <div class="statline"><span>${escapeHtml(this.T("insp.damage"))}</span><span>${stats.damage}</span></div>
+      <div class="statline"><span>${escapeHtml(this.T("insp.range"))}</span><span>${stats.range}</span></div>
+      <div class="statline"><span>${escapeHtml(this.T("insp.rate"))}</span><span>${(1000 / Math.max(1, stats.fireRateMs)).toFixed(2)}/s</span></div>
+      <div class="statline"><span>${escapeHtml(this.T("insp.damageType"))}</span><span>${escapeHtml(this.T(`dmg.${stats.damageType}`))}</span></div>
+      ${stats.applies?.length ? `<div class="statline"><span>${escapeHtml(this.T("insp.effects"))}</span><span>${stats.applies.map((a) => escapeHtml(this.T(`status.${a.kind}`))).join(", ")}</span></div>` : ""}
+      <div class="statline"><span>${escapeHtml(this.T("insp.dealt"))}</span><span>${tower.totalDamage}</span></div>
       <div class="actions">
         <button id="i-up" ${upCost !== null && me.gold >= upCost ? "" : "disabled"}>
-          ${upCost !== null ? `Ausbauen ${upCost}G` : "Max"}
+          ${upCost !== null ? escapeHtml(this.T("insp.upgradeShort", { cost: upCost })) : escapeHtml(this.T("insp.max"))}
         </button>
-        <button id="i-target">${TARGETING_LABEL[tower.targeting as keyof typeof TARGETING_LABEL] ?? tower.targeting}</button>
-        <button id="i-sell" class="danger">Verkaufen ${refund}G</button>
+        <button id="i-target">${escapeHtml(this.C(`targeting.${tower.targeting}`))}</button>
+        <button id="i-sell" class="danger">${escapeHtml(this.T("insp.sellShort", { gold: refund }))}</button>
       </div>
       ${
         canSpec
           ? `<div class="specrow">
-               <h4 style="font-size:11px;color:var(--dim)">Spezialisierung (endgültig)</h4>
+               <h4 style="font-size:11px;color:var(--dim)">${escapeHtml(this.T("insp.specFinal"))}</h4>
                ${def.specializations
                  .map(
-                   (s) => `<button class="specbtn" data-spec="${s.id}" ${me.gold >= s.cost ? "" : "disabled"}>
-                     <strong>${escapeHtml(s.name)}</strong> — ${s.cost}G<br>
-                     <span style="color:var(--dim)">${escapeHtml(s.description)}</span>
+                   (sp) => `<button class="specbtn" data-spec="${sp.id}" ${me.gold >= sp.cost ? "" : "disabled"}>
+                     <strong>${escapeHtml(this.C(`tower.${def.id}.spec.${sp.id}.name`))}</strong> — ${sp.cost}G<br>
+                     <span style="color:var(--dim)">${escapeHtml(this.C(`tower.${def.id}.spec.${sp.id}.desc`))}</span>
                    </button>`
                  )
                  .join("")}
@@ -775,14 +893,14 @@ export class Ui {
 
     box.classList.add("active");
     box.innerHTML = `
-      <h2>Level ${me.commanderLevel} — Perk wählen</h2>
+      <h2>${escapeHtml(this.T("perk.levelTitle", { level: me.commanderLevel }))}</h2>
       <div class="perkcards">
         ${offer
           .map((id) => {
             const perk = PERKS[id];
             return `<button class="perkcard" data-perk="${id}">
-              <h4>${escapeHtml(perk?.name ?? id)}</h4>
-              <p>${escapeHtml(perk?.description ?? "")}</p>
+              <h4>${escapeHtml(perk ? this.C(`perk.${id}.name`) : id)}</h4>
+              <p>${escapeHtml(perk ? this.C(`perk.${id}.desc`) : "")}</p>
             </button>`;
           })
           .join("")}
@@ -796,6 +914,25 @@ export class Ui {
   }
 
   // -------------------------------------------------------------- Ergebnis
+
+  /**
+   * Der Ergebnisgrund kommt als Schlüssel plus JSON-Parameter vom Server.
+   * Kaputtes JSON darf den Bildschirm nicht sprengen — im Zweifel steht dort
+   * eben nur der Grund ohne eingesetzte Werte.
+   */
+  private resultReason(state: MatchState): string {
+    if (!state.resultKey) return "";
+    let params: Record<string, string | number> | undefined;
+    if (state.resultParamsJson) {
+      try {
+        const roh = JSON.parse(state.resultParamsJson);
+        if (roh && typeof roh === "object" && !Array.isArray(roh)) params = roh;
+      } catch {
+        // Unlesbar: Grund ohne Parameter anzeigen statt gar nichts.
+      }
+    }
+    return this.T(state.resultKey, params);
+  }
 
   private renderResult() {
     // Eigener Stempel statt ".screen ist schon da": der alte Guard griff
@@ -812,11 +949,19 @@ export class Ui {
 
     const screen = el(`
       <div class="screen">
-        <h1 style="color:${won ? "var(--gold)" : "var(--danger)"}">${won ? "SIEG" : state.players.size > 1 ? "NIEDERLAGE" : "MATCH ENDE"}</h1>
-        <div class="sub">${escapeHtml(state.resultText)} · Welle ${state.wave} · Seed ${state.seed}</div>
+        <h1 style="color:${won ? "var(--gold)" : "var(--danger)"}">${escapeHtml(
+          won ? this.T("result.victory") : state.players.size > 1 ? this.T("result.defeat") : this.T("result.over")
+        )}</h1>
+        <div class="sub">${escapeHtml(
+          this.T("result.line", {
+            reason: this.resultReason(state),
+            wave: state.wave,
+            seed: state.seed,
+          })
+        )}</div>
         <div class="panel" style="min-width:520px">
           <table class="resulttable">
-            <tr><th>#</th><th>Spieler</th><th>Wellen</th><th>Kills</th><th>Leaks</th><th>Gold</th><th>Sends</th></tr>
+            <tr><th>#</th><th>${escapeHtml(this.T("result.player"))}</th><th>${escapeHtml(this.T("result.waves"))}</th><th>${escapeHtml(this.T("result.kills"))}</th><th>${escapeHtml(this.T("result.leaked"))}</th><th>${escapeHtml(this.T("result.goldEarned"))}</th><th>${escapeHtml(this.T("result.sends"))}</th></tr>
             ${players
               .map(
                 (p) => `<tr class="${state.winnerId === p.sessionId ? "winner" : ""}">
@@ -833,17 +978,17 @@ export class Ui {
           </table>
         </div>
         <div class="row">
-          <button id="again" class="primary" ${me?.isHost ? "" : "disabled"}>Nochmal (Host)</button>
-          <button id="quit">Zum Hauptmenü</button>
+          <button id="again" class="primary" ${me?.isHost ? "" : "disabled"}>${escapeHtml(this.T("result.rematch"))}</button>
+          <button id="quit">${escapeHtml(this.T("result.toMenu"))}</button>
         </div>
-        ${me?.isHost ? "" : '<div class="hint">Der Host startet das Rematch.</div>'}
+        ${me?.isHost ? "" : `<div class="hint">${escapeHtml(this.T("result.hostRematch"))}</div>`}
       </div>`);
     this.root.appendChild(screen);
 
     screen.querySelector("#again")!.addEventListener("click", () => {
       audio.play("ui-click");
       if (!me?.isHost) {
-        this.toast("warn", "Nur der Host kann ein Rematch starten.");
+        this.toast("warn", this.T("result.hostOnlyRematch"));
         return;
       }
       this.send(MSG.rematch);

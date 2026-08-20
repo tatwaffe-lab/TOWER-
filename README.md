@@ -20,6 +20,32 @@ acht Karten wählen.
 Im Produktionsbuild liefert der Server den Client gleich mit aus — dann
 genügt `npm start` und `http://localhost:2567`.
 
+## Sprache
+
+Deutsch und Englisch, umschaltbar im Menü und mitten im Spiel über den
+Schalter in der Kopfzeile. Die Wahl wird gemerkt; beim ersten Start
+entscheidet die Browsersprache.
+
+Zwei Mechanismen, weil es zwei verschiedene Fälle sind:
+
+- **Inhalte** (Turmnamen, Gegner, Perks, Karten) stehen auf Deutsch in den
+  Datendateien, wo sie gepflegt werden. Die englische Fassung liegt in
+  `shared/src/i18n.ts` nach Pfad (`tower.gunner.role`). Ein neuer Turm
+  funktioniert damit sofort, auch unübersetzt.
+- **Oberfläche und Servermeldungen** haben kein Original und stehen mit
+  beiden Sprachen nebeneinander.
+
+**Servermeldungen reisen als Schlüssel plus Parameter, nicht als fertiger
+Satz.** Der Server kennt die Spracheinstellung des Empfängers nicht — und im
+Gefecht können zwei Spieler unterschiedliche gewählt haben. Übersetzt wird
+erst im Client, Turm- und Angriffsnamen in den Parametern eingeschlossen.
+
+Die Übersetzung kann nicht lautlos verrotten: `server/test/i18n.test.js`
+verlangt für jede ID eine englische Entsprechung, meldet verwaiste Einträge
+nach Umbenennungen, vergleicht die Platzhalter beider Sprachen (der klassische
+Fehler: der Satz sieht richtig aus, aber `{cost}` fehlt) und liest den
+Serverquelltext daraufhin durch, ob dort noch fest verdrahtete Sätze stehen.
+
 ## Spielmodi
 
 | Modus | Was es ist |
@@ -82,6 +108,8 @@ Beides wird gemessen, nicht behauptet:
 | Klick / Shift+Klick im Editor | Weg hinzufügen / entfernen |
 | `Leertaste` | nächste Welle vorziehen (beliebig oft, auch während eine läuft) |
 | `Esc` | Auswahl aufheben |
+
+Sprache umschaltbar über den DE/EN-Schalter oben rechts.
 
 **Wellen vorziehen:** Du musst nicht auf den Countdown warten, und es gibt
 keine Obergrenze. Jeder Ruf schickt die nächste Welle sofort los — auch mitten
@@ -190,7 +218,7 @@ Welle 30). Ein Angriff soll den Ausschlag geben, nicht allein entscheiden.
 
 ```bash
 npm test              # Unit + Kartenprüfung + alle E2E
-npm run test:unit     # 59 Unit-Tests (Kampf, Türme, Wellen, Lane, Modi, KI, Karten)
+npm run test:unit     # 69 Unit-Tests (Kampf, Türme, Wellen, Lane, Modi, KI, Karten)
 npm run maps          # 8 Karten gegen die BFS prüfen
 npm run test:server   # Solo-E2E gegen echten Server
 npm run test:multi    # Mehrspieler-E2E mit zwei echten Clients
@@ -215,6 +243,8 @@ shared/   Regeln und Daten, die Client und Server teilen:
           commanderData.ts 4 Commander, 16 Perks, Modifikator-System
           sendData.ts      PvP-Einheiten, Goldkosten und Freischaltstufen
           maps.ts          die 8 Karten
+          i18n.ts          Deutsch/Englisch: Texte und Übersetzungstabelle
+          content.ts       löst Inhaltspfade wie tower.gunner.name auf
           laneEditor.ts    Kartenvalidierung und Serialisierung
           pathfinder.ts    BFS (einzige Pfadregel im Projekt)
           schema.ts        replizierter Zustand (Colyseus)

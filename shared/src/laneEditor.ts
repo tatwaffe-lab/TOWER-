@@ -93,6 +93,12 @@ export function deserializeLaneMap(data: SerializedLaneMap): LaneGrid {
 export interface ValidationResult {
   valid: boolean;
   reason?: string;
+  /**
+   * Übersetzungsschlüssel zum Grund. `reason` bleibt als deutscher Klartext
+   * für Logs und Tests bestehen — angezeigt wird aber der Schlüssel, damit
+   * ein englischer Spieler keine deutsche Fehlermeldung bekommt.
+   */
+  reasonKey?: string;
   /** Länge des Pfades in Feldern, wenn gültig. */
   pathLength?: number;
 }
@@ -101,11 +107,11 @@ export interface ValidationResult {
 export function validateGrid(grid: LaneGrid): ValidationResult {
   const spawnTile = grid.tiles[grid.spawn.y]?.[grid.spawn.x];
   const coreTile = grid.tiles[grid.core.y]?.[grid.core.x];
-  if (spawnTile !== "spawn") return { valid: false, reason: "Spawn-Feld fehlt oder wurde überschrieben" };
-  if (coreTile !== "core") return { valid: false, reason: "Core-Feld fehlt oder wurde überschrieben" };
+  if (spawnTile !== "spawn") return { valid: false, reason: "Spawn-Feld fehlt oder wurde überschrieben", reasonKey: "lane.noSpawn" };
+  if (coreTile !== "core") return { valid: false, reason: "Core-Feld fehlt oder wurde überschrieben", reasonKey: "lane.noCore" };
 
   const path = findPath(grid, grid.spawn, grid.core);
-  if (!path) return { valid: false, reason: "Kein durchgehender Weg vom Spawn zum Core" };
+  if (!path) return { valid: false, reason: "Kein durchgehender Weg vom Spawn zum Core", reasonKey: "lane.noPath" };
   return { valid: true, pathLength: path.length };
 }
 
@@ -127,24 +133,24 @@ export const LANE_EDIT_BASE_COST = 25;
  */
 export function validateEdit(grid: LaneGrid, edit: EditRequest): ValidationResult & { grid?: LaneGrid } {
   const { x, y, action } = edit;
-  if (!Number.isInteger(x) || !Number.isInteger(y)) return { valid: false, reason: "Ungültige Koordinate" };
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return { valid: false, reason: "Ungültige Koordinate", reasonKey: "lane.badCoord" };
   if (x < 0 || y < 0 || x >= grid.config.width || y >= grid.config.height) {
-    return { valid: false, reason: "Feld liegt außerhalb der Karte" };
+    return { valid: false, reason: "Feld liegt außerhalb der Karte", reasonKey: "lane.outside" };
   }
 
   const current = grid.tiles[y][x];
   if (current === "spawn" || current === "core") {
-    return { valid: false, reason: "Spawn und Core können nicht verändert werden" };
+    return { valid: false, reason: "Spawn und Core können nicht verändert werden", reasonKey: "lane.protected" };
   }
 
   if (action === "add-lane") {
-    if (current === "lane") return { valid: false, reason: "Feld ist bereits Lane" };
+    if (current === "lane") return { valid: false, reason: "Feld ist bereits Lane", reasonKey: "lane.alreadyLane" };
     // Neue Lane muss an bestehende Lane angrenzen, sonst entstehen Inseln.
     if (!hasLaneNeighbour(grid, x, y)) {
-      return { valid: false, reason: "Neue Lane muss an eine bestehende Lane angrenzen" };
+      return { valid: false, reason: "Neue Lane muss an eine bestehende Lane angrenzen", reasonKey: "lane.mustTouch" };
     }
   } else {
-    if (current !== "lane") return { valid: false, reason: "Nur Lane-Felder können entfernt werden" };
+    if (current !== "lane") return { valid: false, reason: "Nur Lane-Felder können entfernt werden", reasonKey: "lane.onlyLane" };
   }
 
   const next = cloneGrid(grid);

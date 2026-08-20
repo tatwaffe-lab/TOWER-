@@ -10,7 +10,7 @@ const { Server } = require("colyseus");
 const { WebSocketTransport } = require("@colyseus/ws-transport");
 const http = require("http");
 const { MatchRoom } = require("../dist/rooms/MatchRoom");
-const { MSG, SEND_UNITS, sendCost } = require("../../shared/dist/index.js");
+const { MSG, SEND_UNITS, sendCost , UI } = require("../../shared/dist/index.js");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function assert(cond, msg) {
@@ -128,12 +128,13 @@ async function main() {
       roomRef.state.players.get(client.sessionId).coreHp = 0;
       roomRef.state.players.get(client.sessionId).defeated = true;
       roomRef["recordElimination"](client.sessionId);
-      roomRef["endMatch"]("Testende");
+      roomRef["endMatch"]("result.reason.coreLost");
 
       await waitFor(() => room.state.phase === "result", 5000, "Ergebnisphase erreicht");
-      assert(room.state.resultText.length > 0, "Ergebnis hat einen Text");
+      assert(room.state.resultKey.length > 0, "Ergebnis hat einen Grund-Schlüssel");
+      assert(UI[room.state.resultKey], `Grund ist übersetzbar (${room.state.resultKey})`);
       assert(me().placement > 0, "Platzierung vergeben");
-      console.log(`✓ Ergebnisbildschirm erreicht (${room.state.resultText}, Platz ${me().placement})`);
+      console.log(`✓ Ergebnisbildschirm erreicht (${room.state.resultKey}, Platz ${me().placement})`);
 
       // Jetzt der eigentliche Prüfpunkt: Rematch.
       client.send(MSG.rematch, {});

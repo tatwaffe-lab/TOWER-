@@ -14,7 +14,7 @@ const { Server } = require("colyseus");
 const { WebSocketTransport } = require("@colyseus/ws-transport");
 const http = require("http");
 const { MatchRoom } = require("../dist/rooms/MatchRoom");
-const { MSG, TOWERS, SEND_UNITS, sendCost } = require("../../shared/dist/index.js");
+const { MSG, TOWERS, SEND_UNITS, sendCost , UI } = require("../../shared/dist/index.js");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function assert(cond, msg) {
@@ -239,7 +239,8 @@ async function main() {
 
     // ------------------------------------------------- Rematch
     if (room.state.phase === "result") {
-      assert(room.state.resultText.length > 0, "Ergebnis hat einen Text");
+      assert(room.state.resultKey.length > 0, "Ergebnis hat einen Grund-Schlüssel");
+      assert(UI[room.state.resultKey], `Grund ist übersetzbar (${room.state.resultKey})`);
       const p1Place = p1().placement;
       assert(p1Place > 0, "Platzierung vergeben");
 
